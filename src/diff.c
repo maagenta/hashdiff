@@ -329,15 +329,16 @@ static void tree_pass_fn(void *ctx, int status, const char *path)
     write_status_line(p->out, &p->line, status, path);
 }
 
-void diff_trees(const char *results, const char *abs_origin, const char *abs_destination,
-                struct hd_counts *c, char ***excluded, size_t *nexcluded)
+void diff_trees(const char *results, const struct hd_names *n, const char *abs_origin,
+                const char *abs_destination, struct hd_counts *c, char ***excluded,
+                size_t *nexcluded)
 {
     struct hd_outfile out;
     struct tree_pass pass;
     int i;
 
     memset(c, 0, sizeof(*c));
-    outfile_open(&out, results, "tree-diff.txt");
+    outfile_open(&out, results, n->tree_diff);
     write_roots_header(&out, abs_origin, abs_destination);
     pass.out = &out;
     pass.c = c;
@@ -347,7 +348,7 @@ void diff_trees(const char *results, const char *abs_origin, const char *abs_des
         size_t k;
 
         stream_open(&o, results, "tree-origin.txt", FMT_TREE, abs_origin);
-        stream_open(&d, results, "tree-destination.txt", FMT_TREE, abs_destination);
+        stream_open(&d, results, n->tree, FMT_TREE, abs_destination);
         if (i == 0) {
             for (k = 0; k < o.nexcluded + d.nexcluded; k++) {
                 const char *x = k < o.nexcluded ? o.excluded[k] : d.excluded[k - o.nexcluded];
@@ -444,7 +445,49 @@ static void hash_pass_fn(void *ctx, int status, const char *path)
         outfile_write(p->list, path, strlen(path) + 1);   /* raw path and its '\0' */
 }
 
-void diff_hashes(const char *results, const char *abs_origin,
+unsigned long report_counts(const char *results, const char *name, struct hd_counts *c)
+{
+    char *path = hd_path_join(results, name);
+    struct hd_reader rd;
+
+    memset(c, 0, sizeof(*c));
+    if (reader_open(&rd, path) == 0) {
+        while (reader_next(&rd) == 1 && rd.complete) {
+            int st;
+
+            if (rd.line.len == 0 || rd.line.data[0] == '#')
+                continue;
+            for (st = 0; st < ST_COUNT; st++) {
+                const char *sn = status_name(st);
+                size_t len = strlen(sn);
+
+                if (strncmp(rd.line.data, sn, len) == 0 && rd.line.data[len] == ' ') {
+                    c->n[st]++;
+                    break;
+                }
+            }
+        }
+        reader_close(&rd);
+    }
+    free(path);
+    return counts_total(c);
+}
+
+void tree_excluded(const char *results, const char *name, const char *abs_root,
+                   char ***excluded, size_t *nexcluded)
+{
+    struct stream t;
+    size_t k;
+
+    stream_open(&t, results, name, FMT_TREE, abs_root);
+    for (k = 0; k < t.nexcluded; k++) {
+        *excluded = xrealloc(*excluded, (*nexcluded + 1) * sizeof(**excluded));
+        (*excluded)[(*nexcluded)++] = xstrdup(t.excluded[k]);
+    }
+    stream_close(&t);
+}
+
+void diff_hashes(const char *results, const struct hd_names *n, const char *abs_origin,
                  const char *abs_destination, struct hd_counts *c, struct hd_buf *cmd)
 {
     struct hd_outfile diff, list, command;
@@ -454,11 +497,11 @@ void diff_hashes(const char *results, const char *abs_origin,
 
     memset(c, 0, sizeof(*c));
     stream_open(&o, results, "hashes-origin.txt", FMT_HASHES, abs_origin);
-    stream_open(&d, results, "hashes-destination.txt", FMT_HASHES, abs_destination);
+    stream_open(&d, results, n->hashes, FMT_HASHES, abs_destination);
     if (strcmp(o.mode.data, d.mode.data) != 0)
         hd_die("the '# mode:' lines of the hashes files differ; the lists are not comparable");
-    outfile_open(&diff, results, "diff-files.txt");
-    outfile_open(&list, results, "rsync-files.lst");
+    outfile_open(&diff, results, n->diff_files);
+    outfile_open(&list, results, n->rsync_list);
     write_roots_header(&diff, abs_origin, abs_destination);
     outfile_write(&diff, "# mode: ", 8);
     outfile_write(&diff, o.mode.data, o.mode.len);
@@ -481,7 +524,7 @@ void diff_hashes(const char *results, const char *abs_origin,
 
     buf_clear(cmd);
     if (counts_total(c) - c->n[ST_EXTRA] - c->n[ST_ERR_SRC] > 0) {
-        lst = hd_path_join(results, "rsync-files.lst");
+        lst = hd_path_join(results, n->rsync_list);
         buf_append_str(cmd, "rsync -a -I --from0 --files-from=");
         hd_shell_quote(cmd, lst);
         buf_append_char(cmd, ' ');
@@ -490,7 +533,7 @@ void diff_hashes(const char *results, const char *abs_origin,
         quote_dir(cmd, abs_destination);
         free(lst);
     }
-    outfile_open(&command, results, "rsync-command.txt");
+    outfile_open(&command, results, n->rsync_command);
     if (cmd->len > 0) {
         outfile_write(&command, cmd->data, cmd->len);
         outfile_write(&command, "\n", 1);

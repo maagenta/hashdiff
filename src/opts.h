@@ -7,9 +7,14 @@
 #define HD_PROFILE_SSD 0
 #define HD_PROFILE_HDD 1
 
+/* Section 2.2: one ORIGIN and 1 to 64 destinations. */
+#define HD_MAX_DESTINATIONS 64
+
 struct hd_opts {
     char *origin;        /* cleaned absolute path (section 2.1) */
-    char *destination;
+    char **dest;         /* ndest cleaned absolute paths, in command-line order */
+    int ndest;
+    int ndest_check;     /* --number-of-destinations, or 0 if it was not given */
     char *output;        /* cleaned absolute directory where results.hashdiff is created */
     int resume;
     int force;

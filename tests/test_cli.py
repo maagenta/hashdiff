@@ -15,9 +15,10 @@ def test_version(run_hashdiff):
 def test_help(run_hashdiff):
     code, out, err = run_hashdiff("--help")
     assert code == 0 and err == b""
-    assert out.startswith(b"Usage: hashdiff ORIGIN DESTINATION [OPTIONS]\n")
+    assert out.startswith(b"Usage: hashdiff ORIGIN DESTINATION [DESTINATION ...] [OPTIONS]\n")
     for opt in (b"--output", b"--resume", b"--force", b"--fast", b"--gap", b"--block",
-                b"--profile", b"--jobs", b"--serial", b"--one-file-system", b"--quiet"):
+                b"--profile", b"--jobs", b"--serial", b"--one-file-system",
+                b"--number-of-destinations", b"--quiet"):
         assert opt in out
     assert b"HASHDIFF_MERGE_GAP" not in out
     assert run_hashdiff("-h")[:2] == (0, out)
@@ -26,7 +27,11 @@ def test_help(run_hashdiff):
 @pytest.mark.parametrize("args", [
     (),
     ("only-one",),
-    ("a", "b", "c"),
+    ("a", "b", "--number-of-destinations", "2"),
+    ("a", "b", "c", "--number-of-destinations", "4"),
+    ("a", "b", "--number-of-destinations", "0"),
+    ("a", "b", "--number-of-destinations", "65"),
+    ("a", "b", "--number-of-destinations", "x"),
     ("a", "b", "--bogus"),
     ("a", "b", "-Z"),
     ("a", "b", "--output"),

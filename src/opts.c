@@ -11,7 +11,7 @@
 
 enum opt_id {
     OPT_OUTPUT, OPT_RESUME, OPT_FORCE, OPT_FAST, OPT_GAP, OPT_BLOCK, OPT_PROFILE, OPT_JOBS,
-    OPT_SERIAL, OPT_ONE_FS, OPT_QUIET, OPT_HELP, OPT_VERSION
+    OPT_SERIAL, OPT_ONE_FS, OPT_NDEST, OPT_QUIET, OPT_HELP, OPT_VERSION
 };
 
 struct optdef {
@@ -32,6 +32,7 @@ static const struct optdef optdefs[] = {
     { 'j', "jobs", 1, OPT_JOBS },
     { 0, "serial", 0, OPT_SERIAL },
     { 'x', "one-file-system", 0, OPT_ONE_FS },
+    { 0, "number-of-destinations", 1, OPT_NDEST },
     { 'q', "quiet", 0, OPT_QUIET },
     { 'h', "help", 0, OPT_HELP },
     { 'V', "version", 0, OPT_VERSION }
@@ -40,10 +41,11 @@ static const struct optdef optdefs[] = {
 #define N_OPTDEFS (sizeof(optdefs) / sizeof(optdefs[0]))
 
 static const char *const help_lines[] = {
-    "Usage: hashdiff ORIGIN DESTINATION [OPTIONS]",
+    "Usage: hashdiff ORIGIN DESTINATION [DESTINATION ...] [OPTIONS]",
     "",
-    "Compare the content of two directory trees and list the files to re-sync with rsync.",
-    "Results are written to DIR/results.hashdiff/.",
+    "Compare the content of one directory tree with one or more copies of it and list the",
+    "files to re-sync with rsync. Every destination is compared with ORIGIN, never with",
+    "another destination. Results are written to DIR/results.hashdiff/.",
     "",
     "Options (they may appear before, between or after the paths):",
     "  -o, --output DIR        Existing directory where DIR/results.hashdiff/ is created",
@@ -58,17 +60,20 @@ static const char *const help_lines[] = {
     "  -b, --block SIZE        Bytes read per sample (default: 64K for ssd, 1M for hdd)",
     "      --profile hdd|ssd   Disk type (default: ssd). Sets the default --block, the",
     "                          cost model and the read strategy of --fast",
-    "  -j, --jobs N            Hashing processes per tree, 1..256 (default: 1)",
-    "      --serial            Process ORIGIN and then DESTINATION instead of in parallel",
+    "  -j, --jobs N            Hashing processes per side, 1..256 (default: 1)",
+    "      --serial            Process one side at a time instead of all of them at once",
     "  -x, --one-file-system   Do not cross mount points",
+    "      --number-of-destinations N",
+    "                          Fail unless exactly N destinations were given",
     "  -q, --quiet             No progress on stderr",
     "  -h, --help              Show this help and exit",
     "  -V, --version           Show the version and exit",
     "",
     "SIZE is an integer with an optional K, M, G or T suffix (powers of 1024).",
     "",
-    "Exit status: 0 no differences, 1 differences found, 2 fatal error, 3 completed with",
-    "read errors, 4 the trees differ (nothing was hashed), 128+N interrupted by signal N."
+    "Exit status, most severe first: 2 fatal error, 4 the tree of some destination differs",
+    "(it was not hashed), 3 completed with read errors, 1 differences found, 0 no",
+    "differences; 128+N interrupted by signal N."
 };
 
 #define N_HELP_LINES (sizeof(help_lines) / sizeof(help_lines[0]))
@@ -120,7 +125,8 @@ int opts_parse_size(const char *s, off_t *out)
     return hd_off_mul(v, mult, out);
 }
 
-static int parse_jobs(const char *s, int *out)
+/* A positive integer of at most max, for --jobs and --number-of-destinations. */
+static int parse_count(const char *s, int max, int *out)
 {
     int v = 0;
 
@@ -130,7 +136,7 @@ static int parse_jobs(const char *s, int *out)
         if (!isdigit((unsigned char)*s))
             return -1;
         v = v * 10 + (*s - '0');
-        if (v > 256)
+        if (v > max)
             return -1;
     }
     if (v < 1)
@@ -190,8 +196,15 @@ static int apply(const struct optdef *d, const char *val, struct hd_opts *o, str
         seen->profile = 1;
         break;
     case OPT_JOBS:
-        if (parse_jobs(val, &o->jobs) != 0) {
+        if (parse_count(val, 256, &o->jobs) != 0) {
             usage_error("invalid --jobs (expected an integer from 1 to 256):", val);
+            return OPTS_ERROR;
+        }
+        break;
+    case OPT_NDEST:
+        if (parse_count(val, HD_MAX_DESTINATIONS, &o->ndest_check) != 0) {
+            usage_error("invalid --number-of-destinations (expected an integer from 1 to "
+                        "64):", val);
             return OPTS_ERROR;
         }
         break;
@@ -306,7 +319,7 @@ static int parse_short(int argc, char **argv, int *i, struct hd_opts *o, struct 
 static int parse_args(int argc, char **argv, struct hd_opts *o)
 {
     struct seen seen;
-    const char *paths[2];
+    const char *paths[1 + HD_MAX_DESTINATIONS];
     int npaths = 0, end_of_options = 0, i, r;
 
     seen.gap = seen.block = seen.profile = 0;
@@ -314,8 +327,8 @@ static int parse_args(int argc, char **argv, struct hd_opts *o)
         const char *arg = argv[i];
 
         if (end_of_options || arg[0] != '-' || arg[1] == '\0') {
-            if (npaths == 2) {
-                usage_error("too many arguments:", arg);
+            if (npaths == 1 + HD_MAX_DESTINATIONS) {
+                usage_error("too many destinations (the maximum is 64):", arg);
                 return OPTS_ERROR;
             }
             paths[npaths++] = arg;
@@ -333,11 +346,21 @@ static int parse_args(int argc, char **argv, struct hd_opts *o)
             return r;
     }
     if (npaths < 2) {
-        usage_error("ORIGIN and DESTINATION are required", NULL);
+        usage_error("ORIGIN and at least one DESTINATION are required", NULL);
         return OPTS_ERROR;
     }
-    if (paths[0][0] == '\0' || paths[1][0] == '\0') {
-        usage_error("ORIGIN and DESTINATION must not be empty", NULL);
+    for (i = 0; i < npaths; i++) {
+        if (paths[i][0] == '\0') {
+            usage_error("ORIGIN and the destinations must not be empty", NULL);
+            return OPTS_ERROR;
+        }
+    }
+    if (o->ndest_check != 0 && o->ndest_check != npaths - 1) {
+        char given[32];
+
+        sprintf(given, "%d", npaths - 1);
+        usage_error("--number-of-destinations does not match the number of destinations "
+                    "given:", given);
         return OPTS_ERROR;
     }
     if (o->output != NULL && o->output[0] == '\0') {
@@ -358,7 +381,10 @@ static int parse_args(int argc, char **argv, struct hd_opts *o)
     }
     /* Section 2.1: every path is cleaned once, here, and only the cleaned form is used. */
     o->origin = hd_clean_abs(paths[0]);
-    o->destination = hd_clean_abs(paths[1]);
+    o->ndest = npaths - 1;
+    o->dest = xmalloc((size_t)o->ndest * sizeof(*o->dest));
+    for (i = 0; i < o->ndest; i++)
+        o->dest[i] = hd_clean_abs(paths[i + 1]);
     {
         char *given = o->output;
 
@@ -373,7 +399,9 @@ int opts_parse(int argc, char **argv, struct hd_opts *o)
     int r;
 
     o->origin = NULL;
-    o->destination = NULL;
+    o->dest = NULL;
+    o->ndest = 0;
+    o->ndest_check = 0;
     o->output = NULL;
     o->resume = 0;
     o->force = 0;
@@ -393,10 +421,15 @@ int opts_parse(int argc, char **argv, struct hd_opts *o)
 
 void opts_free(struct hd_opts *o)
 {
+    int i;
+
+    for (i = 0; i < o->ndest; i++)
+        free(o->dest[i]);
+    free(o->dest);
     free(o->origin);
-    free(o->destination);
     free(o->output);
+    o->dest = NULL;
+    o->ndest = 0;
     o->origin = NULL;
-    o->destination = NULL;
     o->output = NULL;
 }

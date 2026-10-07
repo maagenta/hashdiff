@@ -27,9 +27,9 @@ warning flags (`make CFLAGS_EXTRA=-Werror`).
 
 ## Usage
 
-    hashdiff ORIGIN DESTINATION [OPTIONS]
+    hashdiff ORIGIN DESTINATION [DESTINATION ...] [OPTIONS]
 
-Options may appear before, between or after the two paths.
+Options may appear before, between or after the paths.
 
     -o, --output DIR        Existing directory where DIR/results.hashdiff/ is created (default: .)
         --resume            If results.hashdiff exists, resume the interrupted run without asking
@@ -38,14 +38,30 @@ Options may appear before, between or after the two paths.
     -g, --gap SIZE          Maximum unread region between two samples (default: 64M)
     -b, --block SIZE        Bytes read per sample (default: 64K for ssd, 1M for hdd)
         --profile hdd|ssd   Disk type (default: ssd), for --fast
-    -j, --jobs N            Hashing processes per tree, 1..256 (default: 1)
-        --serial            Process ORIGIN and then DESTINATION instead of in parallel
+    -j, --jobs N            Hashing processes per side, 1..256 (default: 1)
+        --serial            Process one side at a time instead of all of them at once
     -x, --one-file-system   Do not cross mount points
+        --number-of-destinations N
+                            Fail unless exactly N destinations were given
     -q, --quiet             No progress on stderr
     -h, --help
     -V, --version
 
 SIZE is an integer with an optional K, M, G or T suffix (powers of 1024).
+
+**Several destinations.** From 1 to 64 copies of ORIGIN can be checked in one run. Every
+destination is compared with ORIGIN and never with another destination, and ORIGIN is
+traversed and hashed once for all of them, so one more destination costs one more read of that
+destination only:
+
+    hashdiff /data/photos /mnt/backup1/photos /mnt/backup2/photos
+
+Each destination gets its own result files, its own line in the summary and its own rsync
+command, and a destination whose tree differs does not stop the others: it is reported and
+skipped while the rest are hashed. With one destination every file name and every line of the
+summary is what it was before, so nothing changes for the common case.
+`--number-of-destinations N` checks the count before anything is read, for scripts where a
+mistyped or glob-expanded path would otherwise become one more destination in silence.
 
 Every path is cleaned before anything else: a relative path is taken from the current
 directory, and `.`, `..` and repeated slashes are removed. So `photos`, `./photos/` and
@@ -99,7 +115,10 @@ rsync command on these trees while hashdiff is running.
 
 ## Output files
 
-All files are in `DIR/results.hashdiff/`; their names are fixed.
+All files are in `DIR/results.hashdiff/`; their names are fixed. With two or more
+destinations, every file that belongs to one of them carries its name
+(`tree-destination-2.txt`, `diff-files-destination-2.txt`, `rsync-files-destination-2.lst`
+and so on); the names below are the ones of a run with a single destination.
 
 | File | Stage | Content |
 |---|---|---|
@@ -121,14 +140,20 @@ entries of their own, so empty directories are not compared.
 
 ## Exit codes
 
+A run reports the most severe status of all its destinations, in this order of precedence:
+
 | Code | Meaning |
 |---|---|
-| 0 | no differences |
-| 1 | differences found |
 | 2 | fatal error (also: "abort" at the prompt, trees changed when resuming) |
+| 4 | the tree of some destination differs, so that destination was not hashed |
 | 3 | completed, but some files could not be read (with or without differences) |
-| 4 | the trees differ: nothing was hashed |
-| 128+N | interrupted by signal N (130 for Ctrl-C) |
+| 1 | differences found |
+| 0 | no differences |
+| 128+N | interrupted by signal N (130 for Ctrl-C), above all of them |
+
+So one destination whose tree differs while another has content differences exits 4, and the
+per-destination lines of the summary say which is which. With a single destination, 4 still
+means that nothing was hashed.
 
 ## Fast mode
 

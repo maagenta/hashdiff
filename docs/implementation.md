@@ -1313,14 +1313,15 @@ writes them once instead of twice.
 10. Several destinations (sections 2.2, 3, 3.1, 7 and 9): side names, 1 + D children, the
     per-destination decision of the tree stage, the numbered files, one comparison and one
     command block per destination, the exit-code precedence of section 2,
-    --number-of-destinations and the warning about the number of readers. Tests 30 to 33.
-    README: usage, the table of output files and the exit codes.
-11. runstate.c: paths.txt and history.txt (section 3.2) and the cleaning of the directory by
-    prefix and suffix
-    instead of a fixed list (section 3.3). Timestamps, `# hashdiff-format: 3` and readers that
-    skip the `#` lines before the records and accept the ones after (sections 7 and 8); the two
-    hash columns and the footer of the diff files, with `# hashdiff-diff: 1` (section 9).
-    Tests 28, 36 and 37.
+    --number-of-destinations and the warning about the number of readers. runstate.c with the
+    cleaning of the directory by prefix and suffix instead of a fixed list (section 3.3),
+    which belongs here and not later: as soon as the names carry a number, a --force over a
+    directory left by a run with more destinations would leave the extra ones behind.
+    Tests 30 to 33. README: usage, the table of output files and the exit codes.
+11. paths.txt and history.txt in runstate.c (section 3.2). Timestamps,
+    `# hashdiff-format: 3` and readers that skip the `#` lines before the records and accept
+    the ones after (sections 7 and 8); the two hash columns and the footer of the diff files,
+    with `# hashdiff-diff: 1` (section 9). Tests 28, 36 and 37.
 12. The three states of an existing results.hashdiff, their flags and their prompts
     (section 3.3). Test 34. README: what hashdiff asks and which flag answers it.
 13. --recheck: the archive, the recheck sets, the filtered lists and the `recheck:` line
