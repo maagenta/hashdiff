@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-gcc
+            os: ubuntu-latest
+            cc: gcc
+            apt: rsync
+          - name: linux-clang
+            os: ubuntu-latest
+            cc: clang
+            apt: rsync
+          - name: linux-m32
+            os: ubuntu-latest
+            cc: gcc -m32
+            apt: rsync gcc-multilib
+            slow: "1"
+          - name: macos
+            os: macos-latest
+            cc: clang
+    env:
+      HASHDIFF_SLOW_TESTS: ${{ matrix.slow }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install system packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+      - name: Install rsync
+        if: runner.os == 'macOS'
+        run: brew install rsync
+      - name: Build
+        run: make all testhook CC="${{ matrix.cc }}" CFLAGS_EXTRA=-Werror
+      - name: Install test dependencies
+        run: make test-deps PYTHON=python
+      - name: Test
+        run: make test CC="${{ matrix.cc }}" CFLAGS_EXTRA=-Werror PYTHON=python
+
+  linux-asan:
+    runs-on: ubuntu-latest
+    env:
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install system packages
+        run: sudo apt-get update && sudo apt-get install -y rsync
+      - name: Build with sanitizers
+        run: make asan
+      - name: Install test dependencies
+        run: make test-deps PYTHON=python
+      - name: Test
+        run: make test PYTHON=python
+
+  linux-musl:
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - name: Install system packages
+        run: apk add build-base python3 py3-pip rsync
+      - uses: actions/checkout@v7
+      - name: Build
+        run: make all testhook CFLAGS_EXTRA=-Werror
+      - name: Install test dependencies
+        run: |
+          python3 -m venv /tmp/venv
+          make test-deps PYTHON=/tmp/venv/bin/python
+      - name: Test
+        run: make test CFLAGS_EXTRA=-Werror PYTHON=/tmp/venv/bin/python
+
+  freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build and test in a FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: pkg install -y gmake python3 rsync
+          run: |
+            set -e
+            gmake all testhook CC=cc CFLAGS_EXTRA=-Werror
+            python3 -m venv /tmp/venv
+            gmake test-deps PYTHON=/tmp/venv/bin/python
+            gmake test CC=cc CFLAGS_EXTRA=-Werror PYTHON=/tmp/venv/bin/python
