@@ -36,6 +36,21 @@ void buf_append(struct hd_buf *b, const char *s, size_t n);
 void buf_append_str(struct hd_buf *b, const char *s);
 void buf_append_char(struct hd_buf *b, int c);
 
+/* Bump allocator for many small strings, freed all at once. */
+struct hd_arena_chunk;
+struct hd_arena {
+    struct hd_arena_chunk *chunks;
+    char *cur;
+    size_t left;
+};
+
+void arena_init(struct hd_arena *a);
+void arena_free(struct hd_arena *a);
+char *arena_strndup(struct hd_arena *a, const char *s, size_t n);
+
+/* Joins a directory and a name with exactly one '/' (dir may be "/"); malloc'd. */
+char *hd_path_join(const char *dir, const char *name);
+
 /* Path escaping of the output files: '\' -> "\\", LF -> "\n", CR -> "\r". */
 void hd_escape(struct hd_buf *out, const char *s);
 /* Appends the unescaped form of s[0..n); returns -1 if the escaping is invalid. */

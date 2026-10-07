@@ -134,6 +134,71 @@ void buf_append_char(struct hd_buf *b, int c)
     buf_append(b, &ch, 1);
 }
 
+struct hd_arena_chunk {
+    struct hd_arena_chunk *next;
+};
+
+#define ARENA_CHUNK (256 * 1024)
+
+void arena_init(struct hd_arena *a)
+{
+    a->chunks = NULL;
+    a->cur = NULL;
+    a->left = 0;
+}
+
+void arena_free(struct hd_arena *a)
+{
+    while (a->chunks != NULL) {
+        struct hd_arena_chunk *next = a->chunks->next;
+
+        free(a->chunks);
+        a->chunks = next;
+    }
+    arena_init(a);
+}
+
+/* Copies n bytes of s and a terminating NUL. */
+char *arena_strndup(struct hd_arena *a, const char *s, size_t n)
+{
+    /* Data starts after the chunk header, rounded up so the header stays aligned. */
+    size_t header = (sizeof(struct hd_arena_chunk) + sizeof(double) - 1) / sizeof(double)
+                    * sizeof(double);
+    char *p;
+
+    if (n + 1 > a->left) {
+        size_t size = n + 1 > ARENA_CHUNK ? n + 1 : ARENA_CHUNK;
+        struct hd_arena_chunk *c;
+
+        if (size > (size_t)-1 - header)
+            hd_die("out of memory");
+        c = xmalloc(header + size);
+        c->next = a->chunks;
+        a->chunks = c;
+        a->cur = (char *)c + header;
+        a->left = size;
+    }
+    p = a->cur;
+    memcpy(p, s, n);
+    p[n] = '\0';
+    a->cur += n + 1;
+    a->left -= n + 1;
+    return p;
+}
+
+char *hd_path_join(const char *dir, const char *name)
+{
+    size_t dlen = strlen(dir), nlen = strlen(name);
+    int slash = dlen > 0 && dir[dlen - 1] != '/';
+    char *p = xmalloc(dlen + (size_t)slash + nlen + 1);
+
+    memcpy(p, dir, dlen);
+    if (slash)
+        p[dlen] = '/';
+    memcpy(p + dlen + (size_t)slash, name, nlen + 1);
+    return p;
+}
+
 void hd_escape(struct hd_buf *out, const char *s)
 {
     for (; *s != '\0'; s++) {
