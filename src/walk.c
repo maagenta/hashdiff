@@ -99,7 +99,8 @@ static void walk_dir(const char *root, const char *rel, const struct walk_opts *
     }
     /* readdir order may be hash order (ext4 dir_index); inode order keeps the lstat
      * calls close together in the inode table. */
-    qsort(ents, n, sizeof(*ents), cmp_dirent_ino);
+    if (n > 1)
+        qsort(ents, n, sizeof(*ents), cmp_dirent_ino);
     for (i = 0; i < n; i++) {
         const char *crel = child_path(l, rel, ents[i].name);
         char *cpath = hd_path_join(dirpath, ents[i].name);
@@ -172,7 +173,8 @@ static int cmp_entry_path(const void *a, const void *b)
 /* Canonical order: strcmp on the raw bytes (strcmp compares as unsigned char). */
 void list_sort(struct hd_list *l)
 {
-    qsort(l->items, l->count, sizeof(*l->items), cmp_entry_path);
+    if (l->count > 1)
+        qsort(l->items, l->count, sizeof(*l->items), cmp_entry_path);
 }
 
 void list_free(struct hd_list *l)
