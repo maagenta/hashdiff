@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "diff.h"
+#include "os.h"
 
 static const char *const status_names[ST_COUNT] = {
     "MISSING", "EXTRA", "SIZE", "TYPE", "HASH", "ERR-SRC", "ERR-DST"
@@ -259,7 +260,8 @@ typedef void (*merge_fn)(void *ctx, int status, const char *path);
 /* Merge-join of both streams in canonical order; calls fn for every differing path. */
 static void merge(struct stream *o, struct stream *d, merge_fn fn, void *ctx)
 {
-    while (o->has || d->has) {
+    /* A caught signal stops the merge; the caller discards its outputs. */
+    while ((o->has || d->has) && !os_caught_signal()) {
         int c = !o->has ? 1 : !d->has ? -1 : strcmp(o->cur.path.data, d->cur.path.data);
         int st;
 
@@ -359,9 +361,14 @@ void diff_trees(const char *results, const char *abs_origin, const char *abs_des
         merge(&o, &d, tree_pass_fn, &pass);
         stream_close(&o);
         stream_close(&d);
+        if (os_caught_signal())
+            break;
     }
     buf_free(&pass.line);
-    outfile_commit(&out);
+    if (os_caught_signal())
+        outfile_discard(&out);
+    else
+        outfile_commit(&out);
 }
 
 /* Root of a transfer with exactly one trailing '/', quoted for the shell. */
@@ -463,6 +470,11 @@ void diff_hashes(const char *results, const char *abs_results, const char *abs_o
     buf_free(&pass.line);
     stream_close(&o);
     stream_close(&d);
+    if (os_caught_signal()) {
+        outfile_discard(&diff);
+        outfile_discard(&list);
+        return;
+    }
     outfile_commit(&diff);
     outfile_commit(&list);
 

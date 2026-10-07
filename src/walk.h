@@ -45,7 +45,8 @@ struct walk_opts {
     size_t nexcludes;
 };
 
-/* Traverses root; an unreadable root is a fatal error. The list is not sorted. */
+/* Traverses root; an unreadable root is a fatal error. The list is not sorted. The
+ * traversal stops early if a signal was caught (os_caught_signal). */
 void walk_tree(const char *root, const struct walk_opts *wo, struct hd_list *list);
 void list_sort(struct hd_list *list);
 void list_free(struct hd_list *list);

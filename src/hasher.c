@@ -12,20 +12,34 @@
 #include "plan.h"
 
 #define READ_BUFSIZE (1024 * 1024)
+#define TICK_SECONDS 2
+#define CHUNKS_PER_JOB 64
 
-void hasher_init(struct hd_hasher *h, const struct hd_hashopts *opts, struct hd_stats *st)
+void stats_init(struct hd_stats *st)
 {
-    h->opts = opts;
-    h->bufsize = READ_BUFSIZE;
-    h->buf = xmalloc(h->bufsize);
-    h->stats = st;
+    st->entries = 0;
+    st->full = 0;
+    st->sampled = 0;
+    st->links = 0;
+    st->errors = 0;
+    st->ignored = 0;
+    st->bytes_read = 0;
+    st->samples = 0;
+    st->sample_bytes = 0;
+    st->sampled_total = 0;
 }
 
-void hasher_free(struct hd_hasher *h)
-{
-    free(h->buf);
-    h->buf = NULL;
-}
+/* ---- hashing of one entry ---- */
+
+struct hasher {
+    const struct hd_hashopts *opts;
+    unsigned char *buf;         /* 1 MiB read buffer of this process */
+    size_t bufsize;
+    off_t bytes_read;           /* bytes read by this process */
+    off_t samples;              /* of the last S result */
+    void (*tick)(void *ctx);    /* called after every read, for progress */
+    void *tick_ctx;
+};
 
 static void set_error(struct hd_result *r, int err)
 {
@@ -34,8 +48,26 @@ static void set_error(struct hd_result *r, int err)
     r->size = 0;
 }
 
+/* Reads at most n bytes; EINTR is retried unless a signal was caught (then -1/EINTR). */
+static ssize_t read_some(int fd, void *buf, size_t n, off_t off, int positional)
+{
+    for (;;) {
+        ssize_t r = positional ? os_pread(fd, buf, n, off) : os_read(fd, buf, n);
+
+        if (r >= 0 || errno != EINTR || os_caught_signal())
+            return r;
+    }
+}
+
+static void after_read(struct hasher *h, ssize_t n)
+{
+    h->bytes_read += n;
+    if (h->tick != NULL)
+        h->tick(h->tick_ctx);
+}
+
 /* Full MD5 with a sequential read loop; the recorded size is the number of bytes read. */
-static void hash_full(struct hd_hasher *h, int fd, struct hd_result *r)
+static void hash_full(struct hasher *h, int fd, struct hd_result *r)
 {
     struct md5_ctx ctx;
     off_t total = 0;
@@ -43,19 +75,25 @@ static void hash_full(struct hd_hasher *h, int fd, struct hd_result *r)
     os_advise_sequential(fd);
     md5_init(&ctx);
     for (;;) {
-        ssize_t n = os_read(fd, h->buf, h->bufsize);
+        ssize_t n;
 
+        if (os_caught_signal()) {
+            r->type = RES_NONE;
+            return;
+        }
+        n = read_some(fd, h->buf, h->bufsize, 0, 0);
         if (n < 0) {
-            if (errno == EINTR)
-                continue;
-            set_error(r, errno);
+            if (os_caught_signal())
+                r->type = RES_NONE;
+            else
+                set_error(r, errno);
             return;
         }
         if (n == 0)
             break;
         md5_update(&ctx, h->buf, (size_t)n);
         total += n;
-        h->stats->bytes_read += n;
+        after_read(h, n);
     }
     md5_final(&ctx, r->md5);
     r->type = RES_FULL;
@@ -65,27 +103,27 @@ static void hash_full(struct hd_hasher *h, int fd, struct hd_result *r)
 
 /*
  * Reads len bytes at off in chunks of at most the buffer size, feeding them to ctx (or
- * discarding them when ctx is NULL). Returns 0, or an errno; a file that ends early (it was
- * truncated during the read) is reported as EIO.
+ * discarding them when ctx is NULL). Returns 0, -1 if a signal was caught, or an errno; a
+ * file that ends early (it was truncated during the read) is reported as EIO.
  */
-static int read_span(struct hd_hasher *h, int fd, off_t off, off_t len, struct md5_ctx *ctx)
+static int read_span(struct hasher *h, int fd, off_t off, off_t len, struct md5_ctx *ctx)
 {
     while (len > 0) {
         size_t want = len < (off_t)h->bufsize ? (size_t)len : h->bufsize;
-        ssize_t n = os_pread(fd, h->buf, want, off);
+        ssize_t n;
 
-        if (n < 0) {
-            if (errno == EINTR)
-                continue;
-            return errno;
-        }
+        if (os_caught_signal())
+            return -1;
+        n = read_some(fd, h->buf, want, off, 1);
+        if (n < 0)
+            return os_caught_signal() ? -1 : errno;
         if (n == 0)
             return EIO;
         if (ctx != NULL)
             md5_update(ctx, h->buf, (size_t)n);
         off += n;
         len -= n;
-        h->stats->bytes_read += n;
+        after_read(h, n);
     }
     return 0;
 }
@@ -95,7 +133,7 @@ static int read_span(struct hd_hasher *h, int fd, off_t off, off_t len, struct m
  * order). Samples closer than merge_gap are read through, discarding the bytes in between;
  * the read order never changes the digest.
  */
-static void hash_sampled(struct hd_hasher *h, int fd, const struct hd_plan *plan,
+static void hash_sampled(struct hasher *h, int fd, const struct hd_plan *plan,
                          struct hd_result *r)
 {
     const struct hd_hashopts *o = h->opts;
@@ -132,7 +170,11 @@ static void hash_sampled(struct hd_hasher *h, int fd, const struct hd_plan *plan
             err = read_span(h, fd, pos, off - pos, NULL);
         if (err == 0)
             err = read_span(h, fd, off, plan->block, &ctx);
-        if (err != 0) {
+        if (err < 0) {
+            r->type = RES_NONE;
+            return;
+        }
+        if (err > 0) {
             set_error(r, err);
             return;
         }
@@ -142,12 +184,10 @@ static void hash_sampled(struct hd_hasher *h, int fd, const struct hd_plan *plan
     r->type = RES_SAMPLED;
     r->err = 0;
     r->size = plan->n;
-    h->stats->samples += plan->k;
-    h->stats->sample_bytes += plan->k * plan->block;
-    h->stats->sampled_total += plan->n;
+    h->samples = plan->k;
 }
 
-static void hash_regular(struct hd_hasher *h, const char *path, struct hd_result *r)
+static void hash_regular(struct hasher *h, const char *path, struct hd_result *r)
 {
     struct os_stat st;
     struct hd_plan plan;
@@ -206,9 +246,12 @@ static void hash_link(const char *path, const struct hd_entry *e, struct hd_resu
     }
 }
 
-void hash_entry(struct hd_hasher *h, const char *path, const struct hd_entry *e,
-                struct hd_result *r)
+static void hash_entry(struct hasher *h, const char *root, const struct hd_entry *e,
+                       struct hd_result *r)
 {
+    char *path = hd_path_join(root, e->path);
+
+    h->samples = 0;
     switch (e->type) {
     case ENT_FILE:
         hash_regular(h, path, r);
@@ -220,21 +263,40 @@ void hash_entry(struct hd_hasher *h, const char *path, const struct hd_entry *e,
         set_error(r, e->err);
         break;
     }
+    free(path);
 }
 
-void stats_init(struct hd_stats *st)
+/* Estimated cost of an entry: bytes the plan will read plus one seek. */
+static off_t entry_cost(const struct hd_entry *e, const struct hd_hashopts *o)
 {
-    st->entries = 0;
-    st->full = 0;
-    st->sampled = 0;
-    st->links = 0;
-    st->errors = 0;
-    st->ignored = 0;
-    st->bytes_read = 0;
-    st->samples = 0;
-    st->sample_bytes = 0;
-    st->sampled_total = 0;
+    struct hd_plan plan;
+    off_t bytes = 0, cost;
+
+    if (e->type == ENT_FILE) {
+        plan.sampled = 0;
+        plan.n = e->size;
+        if (o->fast)
+            plan_make(e->size, o->gap, o->block, o->seek_bytes, &plan);
+        bytes = plan_read_bytes(&plan);
+    }
+    return hd_off_add(bytes, o->seek_bytes, &cost) == 0 ? cost : HD_OFF_MAX;
 }
+
+/* ---- the side process: results, canonical journal, progress ---- */
+
+struct side_state {
+    const char *root;
+    const char *name;
+    const struct hd_list *list;
+    const struct hd_hashopts *opts;
+    struct hd_result *res;
+    size_t next_write;          /* entries [0, next_write) are in the journal */
+    size_t done;
+    struct hd_outfile out;
+    struct hd_buf line;
+    struct hd_stats *st;
+    long last_tick;
+};
 
 static void format_line(struct hd_buf *b, const char *path, const struct hd_result *r)
 {
@@ -259,6 +321,29 @@ static void format_line(struct hd_buf *b, const char *path, const struct hd_resu
     buf_append_char(b, '\n');
 }
 
+static void progress_line(struct side_state *s)
+{
+    char line[256], size[HD_OFF_DEC_LEN + 8];
+
+    sprintf(line, "[%s] %lu/%lu files, %s\n", s->name, (unsigned long)s->done,
+            (unsigned long)s->list->count, hd_human_bytes(s->st->bytes_read, size));
+    (void)hd_write_all(2, line, strlen(line));
+}
+
+/* Every ~2 s: a progress line and a flush of the journal. */
+static void side_tick(void *ctx)
+{
+    struct side_state *s = ctx;
+    long now = os_time();
+
+    if (now - s->last_tick < TICK_SECONDS)
+        return;
+    s->last_tick = now;
+    outfile_flush(&s->out);
+    if (s->opts->progress)
+        progress_line(s);
+}
+
 static void count_result(struct hd_stats *st, const struct hd_result *r)
 {
     st->entries++;
@@ -278,39 +363,302 @@ static void count_result(struct hd_stats *st, const struct hd_result *r)
     }
 }
 
-void hash_list(const char *root, const struct hd_list *l, const char *results,
-               const char *side, const char *abs_root, const struct hd_hashopts *opts,
-               struct hd_stats *st)
+/* Stores a result and writes every entry of the journal's prefix that is now complete. */
+static void store_result(struct side_state *s, size_t idx, const struct hd_result *r,
+                         off_t samples)
 {
-    struct hd_outfile out;
-    struct hd_hasher h;
-    struct hd_buf line;
+    s->res[idx] = *r;
+    s->done++;
+    count_result(s->st, r);
+    if (r->type == RES_SAMPLED) {
+        s->st->samples += samples;
+        s->st->sample_bytes += samples * s->opts->block;
+        s->st->sampled_total += r->size;
+    }
+    while (s->next_write < s->list->count && s->res[s->next_write].type != RES_NONE) {
+        format_line(&s->line, s->list->items[s->next_write].path, &s->res[s->next_write]);
+        outfile_write(&s->out, s->line.data, s->line.len);
+        s->next_write++;
+    }
+    side_tick(s);
+}
+
+/* Consecutive chunks of about total / (64 x jobs) estimated cost; returns their count. */
+static size_t make_chunks(const struct hd_list *l, const struct hd_hashopts *o,
+                          size_t **starts)
+{
+    off_t total = 0, target, acc = 0, c;
+    size_t i, n = 0;
+
+    for (i = 0; i < l->count; i++) {
+        c = entry_cost(&l->items[i], o);
+        total = hd_off_add(total, c, &total) == 0 ? total : HD_OFF_MAX;
+    }
+    target = total / ((off_t)CHUNKS_PER_JOB * o->jobs);
+    if (target < 1)
+        target = 1;
+    *starts = xmalloc((l->count + 1) * sizeof(**starts));
+    for (i = 0; i < l->count; i++) {
+        if (acc == 0)
+            (*starts)[n++] = i;
+        c = entry_cost(&l->items[i], o);
+        if (hd_off_add(acc, c, &acc) != 0 || acc >= target)
+            acc = 0;
+    }
+    (*starts)[n] = l->count;
+    return n;
+}
+
+static const struct hd_entry *sort_base;
+
+static int cmp_index_ino(const void *a, const void *b)
+{
+    size_t x = *(const size_t *)a, y = *(const size_t *)b;
+    ino_t ix = sort_base[x].ino, iy = sort_base[y].ino;
+
+    if (ix != iy)
+        return ix < iy ? -1 : 1;
+    return x < y ? -1 : x > y;
+}
+
+/* -j 1: the bytes of the file being read count in the progress at once. */
+struct serial_ctx {
+    struct side_state *s;
+    struct hasher *h;
+    off_t base;
+};
+
+static void serial_tick(void *ctx)
+{
+    struct serial_ctx *c = ctx;
+
+    c->s->st->bytes_read = c->base + c->h->bytes_read;
+    side_tick(c->s);
+}
+
+/* -j 1: the side process hashes every chunk itself. */
+static void hash_serial(struct side_state *s, const size_t *starts, size_t nchunks)
+{
+    const struct hd_list *l = s->list;
+    int inode_order = s->opts->fast && s->opts->hdd;
+    struct hasher h;
+    struct serial_ctx sc;
+    size_t *order = xmalloc((l->count + 1) * sizeof(*order));
+    size_t c, i, n;
+
+    h.opts = s->opts;
+    h.bufsize = READ_BUFSIZE;
+    h.buf = xmalloc(h.bufsize);
+    h.bytes_read = 0;
+    sc.s = s;
+    sc.h = &h;
+    sc.base = s->st->bytes_read;
+    h.tick = serial_tick;
+    h.tick_ctx = &sc;
+    for (c = 0; c < nchunks && !os_caught_signal(); c++) {
+        n = starts[c + 1] - starts[c];
+        for (i = 0; i < n; i++)
+            order[i] = starts[c] + i;
+        if (inode_order) {
+            sort_base = l->items;
+            qsort(order, n, sizeof(*order), cmp_index_ino);
+        }
+        for (i = 0; i < n && !os_caught_signal(); i++) {
+            struct hd_result r;
+
+            hash_entry(&h, s->root, &l->items[order[i]], &r);
+            s->st->bytes_read = sc.base + h.bytes_read;
+            if (r.type == RES_NONE)
+                break;
+            store_result(s, order[i], &r, h.samples);
+        }
+    }
+    free(h.buf);
+    free(order);
+}
+
+/* Records from the workers; each is written with a single write() smaller than PIPE_BUF. */
+#define REC_RESULT 1
+#define REC_PROGRESS 2
+
+struct worker_rec {
+    int kind;
+    unsigned long index;
+    struct hd_result r;
+    off_t bytes;                /* bytes read since the previous record of this worker */
+    off_t samples;
+};
+
+struct worker_state {
+    int fd;
+    struct hasher h;
+    off_t reported;             /* bytes already sent in records */
+    long last_tick;
+};
+
+static void worker_send(struct worker_state *w, struct worker_rec *rec)
+{
+    rec->bytes = w->h.bytes_read - w->reported;
+    w->reported = w->h.bytes_read;
+    if (hd_write_all(w->fd, rec, sizeof(*rec)) != 0)
+        os_exit_now(os_caught_signal() ? 128 + os_caught_signal() : 2);
+}
+
+static void worker_tick(void *ctx)
+{
+    struct worker_state *w = ctx;
+    struct worker_rec rec;
+    long now = os_time();
+
+    if (now - w->last_tick < TICK_SECONDS)
+        return;
+    w->last_tick = now;
+    memset(&rec, 0, sizeof(rec));
+    rec.kind = REC_PROGRESS;
+    worker_send(w, &rec);
+}
+
+static void run_worker(const struct side_state *s, const size_t *starts, size_t nchunks,
+                       int k, int fd)
+{
+    const struct hd_list *l = s->list;
+    struct worker_state w;
+    size_t c, i;
+
+    w.fd = fd;
+    w.reported = 0;
+    w.last_tick = os_time();
+    w.h.opts = s->opts;
+    w.h.bufsize = READ_BUFSIZE;
+    w.h.buf = xmalloc(w.h.bufsize);
+    w.h.bytes_read = 0;
+    w.h.tick = worker_tick;
+    w.h.tick_ctx = &w;
+    for (c = (size_t)k; c < nchunks; c += (size_t)s->opts->jobs) {
+        for (i = starts[c]; i < starts[c + 1]; i++) {
+            struct worker_rec rec;
+
+            if (os_caught_signal())
+                os_exit_now(128 + os_caught_signal());
+            memset(&rec, 0, sizeof(rec));
+            hash_entry(&w.h, s->root, &l->items[i], &rec.r);
+            if (rec.r.type == RES_NONE)
+                os_exit_now(128 + os_caught_signal());
+            rec.kind = REC_RESULT;
+            rec.index = (unsigned long)i;
+            rec.samples = w.h.samples;
+            worker_send(&w, &rec);
+        }
+    }
+    os_exit_now(0);
+}
+
+/* -j N: N workers hash chunks k, k + N, ...; the side process stores their records. */
+static void hash_parallel(struct side_state *s, const size_t *starts, size_t nchunks)
+{
+    int jobs = s->opts->jobs, k, fds[2], code, sig, failed = 0, forwarded = 0;
+    long *pids = xmalloc((size_t)jobs * sizeof(*pids));
+    struct worker_rec rec;
+
+    if (os_pipe(fds) != 0)
+        hd_die("cannot create a pipe: %s", strerror(errno));
+    outfile_flush(&s->out);
+    fflush(NULL);
+    for (k = 0; k < jobs; k++) {
+        pids[k] = os_fork();
+        if (pids[k] < 0)
+            hd_die("cannot fork: %s", strerror(errno));
+        if (pids[k] == 0) {
+            os_close(fds[0]);
+            run_worker(s, starts, nchunks, k, fds[1]);
+        }
+    }
+    os_close(fds[1]);
+    for (;;) {
+        ssize_t n = hd_read_full(fds[0], &rec, sizeof(rec));
+
+        if (n < 0 && errno == EINTR) {
+            /* Interrupted: forward the signal and keep reading until every worker exits. */
+            if (!forwarded)
+                for (k = 0; k < jobs; k++)
+                    (void)os_kill(pids[k], os_caught_signal());
+            forwarded = 1;
+            continue;
+        }
+        if (n < 0)
+            hd_die("cannot read from the workers: %s", strerror(errno));
+        if (n == 0)
+            break;
+        if (n != (ssize_t)sizeof(rec))
+            hd_die("truncated record from a worker");
+        s->st->bytes_read += rec.bytes;
+        if (rec.kind == REC_RESULT && rec.index < s->list->count)
+            store_result(s, (size_t)rec.index, &rec.r, rec.samples);
+        else
+            side_tick(s);
+    }
+    os_close(fds[0]);
+    for (k = 0; k < jobs; k++) {
+        if (os_wait(pids[k], &code, &sig) != 0 || (code != 0 && !os_caught_signal()))
+            failed = 1;
+    }
+    free(pids);
+    if (failed)
+        hd_die("a %s worker process failed", s->name);
+}
+
+int hash_side(const char *root, const struct hd_list *l, const char *results,
+              const char *side, const char *abs_root, const struct hd_hashopts *opts,
+              struct hd_stats *st)
+{
+    struct side_state s;
+    size_t *starts, nchunks, i;
     char name[64];
-    size_t i;
+    int sig;
+
+    s.root = root;
+    s.name = side;
+    s.list = l;
+    s.opts = opts;
+    s.res = xmalloc((l->count + 1) * sizeof(*s.res));
+    for (i = 0; i < l->count; i++)
+        s.res[i].type = RES_NONE;
+    s.next_write = 0;
+    s.done = 0;
+    s.st = st;
+    s.last_tick = 0;
+    st->ignored = l->ignored;
 
     sprintf(name, "hashes-%s.txt", side);
-    outfile_open(&out, results, name);
-    buf_init(&line);
-    buf_append_str(&line, "# hashdiff-format: 2\n# root: ");
-    hd_escape(&line, abs_root);
-    buf_append_str(&line, "\n# mode: ");
-    buf_append_str(&line, opts->mode_line);
-    buf_append_char(&line, '\n');
-    outfile_write(&out, line.data, line.len);
-    hasher_init(&h, opts, st);
-    for (i = 0; i < l->count; i++) {
-        const struct hd_entry *e = &l->items[i];
-        char *path = hd_path_join(root, e->path);
-        struct hd_result r;
+    outfile_open(&s.out, results, name);
+    buf_init(&s.line);
+    buf_append_str(&s.line, "# hashdiff-format: 2\n# root: ");
+    hd_escape(&s.line, abs_root);
+    buf_append_str(&s.line, "\n# mode: ");
+    buf_append_str(&s.line, opts->mode_line);
+    buf_append_char(&s.line, '\n');
+    outfile_write(&s.out, s.line.data, s.line.len);
 
-        hash_entry(&h, path, e, &r);
-        free(path);
-        count_result(st, &r);
-        format_line(&line, e->path, &r);
-        outfile_write(&out, line.data, line.len);
+    nchunks = make_chunks(l, opts, &starts);
+    if (opts->jobs > 1 && l->count > 0)
+        hash_parallel(&s, starts, nchunks);
+    else
+        hash_serial(&s, starts, nchunks);
+    free(starts);
+
+    sig = os_caught_signal();
+    if (opts->progress && sig == 0)
+        progress_line(&s);
+    buf_free(&s.line);
+    free(s.res);
+    if (sig != 0) {
+        /* Keep the journal (complete lines in canonical order) for --resume. */
+        outfile_flush(&s.out);
+        fclose(s.out.f);
+        free(s.out.path);
+        free(s.out.tmp);
+        return sig;
     }
-    st->ignored = l->ignored;
-    hasher_free(&h);
-    buf_free(&line);
-    outfile_commit(&out);
+    outfile_commit(&s.out);
+    return 0;
 }

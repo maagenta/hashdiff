@@ -10,6 +10,7 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "os.h"
@@ -238,4 +239,43 @@ int os_kill(long pid, int sig)
 void os_exit_now(int status)
 {
     _exit(status);
+}
+
+static volatile sig_atomic_t caught_signal = 0;
+
+static void on_signal(int sig)
+{
+    caught_signal = sig;
+}
+
+void os_install_signal_handlers(void)
+{
+    struct sigaction sa;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    (void)sigaction(SIGINT, &sa, NULL);
+    (void)sigaction(SIGTERM, &sa, NULL);
+}
+
+int os_caught_signal(void)
+{
+    return (int)caught_signal;
+}
+
+int os_sigint(void)
+{
+    return SIGINT;
+}
+
+int os_sigterm(void)
+{
+    return SIGTERM;
+}
+
+long os_time(void)
+{
+    return (long)time(NULL);
 }

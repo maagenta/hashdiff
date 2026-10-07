@@ -322,7 +322,8 @@ int hd_off_mul(off_t a, off_t b, off_t *r)
     return 0;
 }
 
-/* Reads until n bytes or EOF; retries on EINTR. Returns bytes read, or -1 with errno. */
+/* Reads until n bytes or EOF; retries on EINTR unless a signal handler ran (then -1 with
+ * errno EINTR). Returns bytes read, or -1 with errno. */
 ssize_t hd_read_full(int fd, void *buf, size_t n)
 {
     size_t done = 0;
@@ -331,7 +332,7 @@ ssize_t hd_read_full(int fd, void *buf, size_t n)
         ssize_t r = os_read(fd, (char *)buf + done, n - done);
 
         if (r < 0) {
-            if (errno == EINTR)
+            if (errno == EINTR && !os_caught_signal())
                 continue;
             return -1;
         }
@@ -350,7 +351,7 @@ int hd_write_all(int fd, const void *buf, size_t n)
         ssize_t r = os_write(fd, (const char *)buf + done, n - done);
 
         if (r < 0) {
-            if (errno == EINTR)
+            if (errno == EINTR && !os_caught_signal())
                 continue;
             return -1;
         }

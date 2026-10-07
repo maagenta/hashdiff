@@ -155,7 +155,8 @@ void walk_tree(const char *root, const struct walk_opts *wo, struct hd_list *l)
     if (os_stat(root, &st) != 0)
         hd_die("cannot access %s '%s': %s", wo->side, root, strerror(errno));
     walk_dir(root, "", wo, st.dev, l, &stack, &depth, &stack_cap);
-    while (depth > 0) {
+    /* A caught signal stops the traversal between directories; the caller checks it. */
+    while (depth > 0 && !os_caught_signal()) {
         const char *rel = stack[--depth];
 
         walk_dir(root, rel, wo, st.dev, l, &stack, &depth, &stack_cap);

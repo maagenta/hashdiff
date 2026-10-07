@@ -148,8 +148,11 @@ static void prepare_results(const char *results, const struct hd_opts *o)
 
 static void child_send(int fd, const struct msg *m)
 {
-    if (hd_write_all(fd, m, sizeof(*m)) != 0)
+    if (hd_write_all(fd, m, sizeof(*m)) != 0) {
+        if (os_caught_signal())
+            hd_exit(128 + os_caught_signal());
         hd_die("cannot write to the parent process: %s", strerror(errno));
+    }
 }
 
 static struct hd_hashopts hashopts;
@@ -161,12 +164,15 @@ static void run_child(struct side *s, int in_fd, int out_fd, const char *results
     struct hd_list list;
     struct msg m;
     char cmd;
+    int sig;
 
     wo.side = s->name;
     wo.one_fs = o->one_fs;
     wo.excludes = excl;
     wo.nexcludes = nexcl;
     walk_tree(s->root, &wo, &list);
+    if (os_caught_signal())
+        hd_exit(128 + os_caught_signal());
     list_sort(&list);
     tree_write(results, s->name, s->abs_root, &list);
 
@@ -179,12 +185,14 @@ static void run_child(struct side *s, int in_fd, int out_fd, const char *results
 
     if (hd_read_full(in_fd, &cmd, 1) != 1 || cmd != CMD_HASH) {
         list_free(&list);
-        hd_exit(0);
+        hd_exit(os_caught_signal() ? 128 + os_caught_signal() : 0);
     }
     memset(&m, 0, sizeof(m));
     m.kind = MSG_HASHES;
     stats_init(&m.stats);
-    hash_list(s->root, &list, results, s->name, s->abs_root, &hashopts, &m.stats);
+    sig = hash_side(s->root, &list, results, s->name, s->abs_root, &hashopts, &m.stats);
+    if (sig != 0)
+        hd_exit(128 + sig);
     child_send(out_fd, &m);
     list_free(&list);
     hd_exit(m.stats.errors > 0 ? 3 : 0);
@@ -205,6 +213,31 @@ static void kill_children(void)
     }
 }
 
+/* SIGINT/SIGTERM in the parent: forward it to the children, wait for them (they keep their
+ * journals for --resume) and exit with 128 + signal number. */
+static void interrupted(void)
+{
+    int i, code, sig = os_caught_signal();
+
+    for (i = 0; i < 2; i++)
+        if (sides[i].pid > 0)
+            (void)os_kill(sides[i].pid, sig);
+    for (i = 0; i < 2; i++) {
+        if (sides[i].pid > 0) {
+            (void)os_wait(sides[i].pid, &code, &sig);
+            sides[i].pid = 0;
+        }
+    }
+    fputs("hashdiff: interrupted\n", stderr);
+    hd_exit(128 + os_caught_signal());
+}
+
+static void check_interrupted(void)
+{
+    if (os_caught_signal())
+        interrupted();
+}
+
 /* Waits for a child that should have exited; a failure is fatal for the whole run. */
 static void reap_child(struct side *s)
 {
@@ -213,6 +246,7 @@ static void reap_child(struct side *s)
     if (os_wait(s->pid, &code, &sig) != 0)
         hd_die("cannot wait for the %s process: %s", s->name, strerror(errno));
     s->pid = 0;
+    check_interrupted();
     if (code != 0 && code != 3) {
         kill_children();
         if (code < 0)
@@ -270,6 +304,7 @@ static void receive(struct side *s, int kind, struct hd_stats *st)
         *st = m.stats;
         return;
     }
+    check_interrupted();
     reap_child(s);
     kill_children();
     hd_die("the %s process ended unexpectedly", s->name);
@@ -278,6 +313,7 @@ static void receive(struct side *s, int kind, struct hd_stats *st)
 static void command(struct side *s, char cmd)
 {
     if (hd_write_all(s->to_child, &cmd, 1) != 0) {
+        check_interrupted();
         kill_children();
         hd_die("cannot write to the %s process: %s", s->name, strerror(errno));
     }
@@ -297,6 +333,9 @@ static void setup_hashopts(const struct hd_opts *o, struct hd_buf *mode)
     char num[HD_OFF_DEC_LEN];
 
     hashopts.fast = o->fast;
+    hashopts.hdd = o->profile == HD_PROFILE_HDD;
+    hashopts.jobs = o->jobs;
+    hashopts.progress = !o->quiet && os_isatty(2);
     hashopts.gap = o->gap;
     hashopts.block = o->block > 0 ? o->block : prof->default_block;
     hashopts.seek_bytes = prof->seek_bytes;
@@ -451,6 +490,10 @@ int main(int argc, char **argv)
         hd_die("ORIGIN and DESTINATION are the same directory");
     stat_dir("output directory", o.output, &sout);
     setup_hashopts(&o, &mode);
+    if (o.fast && o.profile == HD_PROFILE_HDD && o.jobs > 1)
+        hd_warn("--jobs %d with --profile hdd: several readers on the same disk usually "
+                "reduce throughput", o.jobs);
+    os_install_signal_handlers();
     results = hd_path_join(o.output, RESULTS_NAME);
     prepare_results(results, &o);
     stat_dir("results directory", results, &sres);
@@ -471,6 +514,7 @@ int main(int argc, char **argv)
             receive(&sides[i], MSG_TREE, &sides[i].tree);
     diff_trees(results, sides[0].abs_root, sides[1].abs_root, &counts, &excluded,
                &nexcluded);
+    check_interrupted();
 
     if (counts_total(&counts) > 0) {
         for (i = 0; i < 2; i++) {
@@ -498,6 +542,7 @@ int main(int argc, char **argv)
         buf_init(&cmd);
         diff_hashes(results, abs_results, sides[0].abs_root, sides[1].abs_root, &counts,
                     &cmd);
+        check_interrupted();
         status = finish_hash_stage(&counts, abs_results, &cmd, started, o.fast);
         buf_free(&cmd);
     }

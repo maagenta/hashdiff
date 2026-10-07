@@ -60,4 +60,12 @@ int os_wait(long pid, int *code, int *sig);
 int os_kill(long pid, int sig);
 void os_exit_now(int status);   /* _exit() */
 
+/* SIGINT and SIGTERM: the handler only records the signal number. No SA_RESTART, so a
+ * blocking read or write returns EINTR and the caller can check os_caught_signal(). */
+void os_install_signal_handlers(void);
+int os_caught_signal(void);     /* 0, or the number of the last signal caught */
+int os_sigint(void);
+int os_sigterm(void);
+long os_time(void);             /* time() in seconds */
+
 #endif

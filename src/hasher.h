@@ -7,11 +7,12 @@
 #include "util.h"
 #include "walk.h"
 
-/* Result types of the hashes file. */
+/* Result types of the hashes file; RES_NONE: not hashed (interrupted). */
 #define RES_FULL 'F'
 #define RES_SAMPLED 'S'
 #define RES_LINK 'L'
 #define RES_ERROR 'E'
+#define RES_NONE 0
 
 struct hd_result {
     char type;
@@ -39,29 +40,23 @@ void stats_init(struct hd_stats *st);
 /* Parameters of the hash stage, fixed for the whole run. */
 struct hd_hashopts {
     int fast;
+    int hdd;                    /* --profile hdd: inode read order with -j 1 in fast mode */
     off_t gap;
     off_t block;
     off_t seek_bytes;
     off_t merge_gap;
+    int jobs;
+    int progress;               /* print progress lines on stderr */
     const char *mode_line;      /* value of the "# mode:" header */
 };
 
-struct hd_hasher {
-    const struct hd_hashopts *opts;
-    unsigned char *buf;         /* 1 MiB read buffer of this process */
-    size_t bufsize;
-    struct hd_stats *stats;
-};
-
-void hasher_init(struct hd_hasher *h, const struct hd_hashopts *opts, struct hd_stats *st);
-void hasher_free(struct hd_hasher *h);
-/* Hashes one entry of the list; path is the full path of the entry. */
-void hash_entry(struct hd_hasher *h, const char *path, const struct hd_entry *e,
-                struct hd_result *r);
-
-/* Hashes a sorted list into DIR/hashes-SIDE.txt and fills the statistics. */
-void hash_list(const char *root, const struct hd_list *list, const char *results,
-               const char *side, const char *abs_root, const struct hd_hashopts *opts,
-               struct hd_stats *st);
+/*
+ * Hashes a sorted list into DIR/hashes-SIDE.txt (written as a journal in canonical order and
+ * renamed when complete) and fills the statistics. Returns 0, or the number of the signal
+ * that interrupted it; the journal is then kept as hashes-SIDE.txt.tmp.
+ */
+int hash_side(const char *root, const struct hd_list *list, const char *results,
+              const char *side, const char *abs_root, const struct hd_hashopts *opts,
+              struct hd_stats *st);
 
 #endif
