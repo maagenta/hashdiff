@@ -192,6 +192,17 @@ static void remove_file(const char *dir, const char *name, const char *suffix)
     free(p);
 }
 
+/* Copies an archive name into recheck_dir, truncated if need be and always terminated. */
+static void set_recheck_dir(const char *name)
+{
+    size_t n = strlen(name);
+
+    if (n > sizeof(recheck_dir) - 1)
+        n = sizeof(recheck_dir) - 1;
+    memcpy(recheck_dir, name, n);
+    recheck_dir[n] = '\0';
+}
+
 /* Section 3.3: what the prompt of each state offers, and the flags that answer it. */
 static void state_question(const char *output, int state, const struct hd_runstate *rs)
 {
@@ -1036,14 +1047,14 @@ int main(int argc, char **argv)
             strcpy(recheck_of, rs.started);
             recheck_paths = runstate_recheck_sets(results, archive, roles, nsides, mode.data,
                                                   recheck_sets);
-            strncpy(recheck_dir, archive, sizeof(recheck_dir) - 1);
+            set_recheck_dir(archive);
             free(archive);
         } else if (resuming && rs.recheck[0] != '\0') {
             /* A resumed recheck reads the same paths: the archive is named in paths.txt. */
             rechecking = 1;
             recheck_paths = runstate_recheck_sets(results, rs.recheck, roles, nsides,
                                                   mode.data, recheck_sets);
-            strncpy(recheck_dir, rs.recheck, sizeof(recheck_dir) - 1);
+            set_recheck_dir(rs.recheck);
             if (hd_time_from_stamp(rs.recheck + 5, recheck_of) == NULL)
                 strcpy(recheck_of, "an earlier run");
         }
