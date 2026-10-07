@@ -7,6 +7,8 @@ import os
 
 import pytest
 
+from conftest import RESULT_FILES
+
 
 def summary_lines(stdout, prefix):
     return [line for line in stdout.split(b"\n") if line.startswith(prefix)]
@@ -56,10 +58,7 @@ def test_one_destination_keeps_the_names_of_1_1(compare, make_tree):
     destination = make_tree("destination", {"a": b"XX"})
     code, stdout, err, results = compare(origin, destination)
     assert code == 1, err
-    assert sorted(os.listdir(results)) == [b"diff-files.txt", b"hashes-destination.txt",
-                                           b"hashes-origin.txt", b"rsync-command.txt",
-                                           b"rsync-files.lst", b"tree-destination.txt",
-                                           b"tree-diff.txt", b"tree-origin.txt"]
+    assert sorted(os.listdir(results)) == sorted(RESULT_FILES)
     assert b"destination: 1 file," in stdout
     assert b"differences: 1 HASH," in stdout
     assert b"command for" not in stdout

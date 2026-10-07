@@ -5,11 +5,7 @@ import subprocess
 
 import pytest
 
-from conftest import Symlink, read_bytes
-
-RESULT_FILES = [b"tree-origin.txt", b"tree-destination.txt", b"tree-diff.txt",
-                b"hashes-origin.txt", b"hashes-destination.txt", b"diff-files.txt",
-                b"rsync-files.lst", b"rsync-command.txt"]
+from conftest import RESULT_FILES, Symlink, read_bytes, strip_time
 
 
 def varied_trees(make_tree):
@@ -36,7 +32,8 @@ def results_of(run_hashdiff, tmp_path, origin, destination, args):
     code, stdout, stderr = run_hashdiff(origin, destination, "-o", out, *args)
     assert code == 1, stderr
     results = os.path.join(out, b"results.hashdiff")
-    files = {name: read_bytes(os.path.join(results, name)) for name in RESULT_FILES}
+    files = {name: strip_time(read_bytes(os.path.join(results, name)))
+             for name in RESULT_FILES if name != b"history.txt"}
     # The command names its own results directory, which differs between runs.
     files[b"rsync-command.txt"] = files[b"rsync-command.txt"].replace(out, b"OUT")
     return files

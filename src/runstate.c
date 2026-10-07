@@ -95,3 +95,45 @@ int runstate_has_hashes(const char *results)
     os_free_dir(entries, count);
     return found;
 }
+
+void runstate_write_paths(const char *results, const char *started, int file_mode,
+                          const struct hd_role *roles, int nroles)
+{
+    static const char *const paths_magic = "# hashdiff-paths: 1\n";
+    static const char *const history_magic = "# hashdiff-history: 1\n";
+    struct hd_outfile out;
+    struct os_stat st;
+    struct hd_buf b;
+    char *path;
+    FILE *f;
+    int i, fresh;
+
+    buf_init(&b);
+    buf_append_str(&b, "# started: ");
+    buf_append_str(&b, started);
+    buf_append_char(&b, '\n');
+    if (file_mode)
+        buf_append_str(&b, "# file: 1\n");
+    for (i = 0; i < nroles; i++) {
+        buf_append_str(&b, roles[i].name);
+        buf_append_char(&b, ' ');
+        hd_escape(&b, roles[i].root);
+        buf_append_char(&b, '\n');
+    }
+    outfile_open(&out, results, "paths.txt");
+    outfile_write(&out, paths_magic, strlen(paths_magic));
+    outfile_write(&out, b.data, b.len);
+    outfile_commit(&out);
+
+    path = hd_path_join(results, "history.txt");
+    fresh = os_lstat(path, &st) != 0;
+    f = fopen(path, "ab");
+    if (f == NULL)
+        hd_die("cannot write '%s': %s", path, strerror(errno));
+    /* Appended, oldest first: "newest on top" would mean rewriting the whole file every run. */
+    if ((fresh && fwrite(history_magic, 1, strlen(history_magic), f) != strlen(history_magic))
+        || fwrite(b.data, 1, b.len, f) != b.len || fputc('\n', f) == EOF || fclose(f) != 0)
+        hd_die("cannot write '%s': %s", path, strerror(errno));
+    free(path);
+    buf_free(&b);
+}

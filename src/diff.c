@@ -148,7 +148,8 @@ static void stream_next(struct stream *s)
     int got;
 
     stream_read_line(s, &got);
-    if (!got) {
+    /* A "#" line after the records is the footer of section 8: the data ends there. */
+    if (!got || (s->rd.line.len > 0 && s->rd.line.data[0] == '#')) {
         s->has = 0;
         return;
     }
@@ -170,7 +171,7 @@ static const char *header_value(const struct hd_buf *line, const char *key)
 static void stream_open(struct stream *s, const char *dir, const char *name, int fmt,
                         const char *abs_root)
 {
-    const char *magic = fmt == FMT_TREE ? "# hashdiff-tree: 1" : "# hashdiff-format: 2";
+    const char *magic = fmt == FMT_TREE ? "# hashdiff-tree: 1" : "# hashdiff-format: 3";
     struct hd_buf root;
     const char *v;
     int got, lineno = 0, seen_root = 0;
@@ -212,6 +213,10 @@ static void stream_open(struct stream *s, const char *dir, const char *name, int
                 stream_fail(s, "malformed header");
             s->excluded = xrealloc(s->excluded, (s->nexcluded + 1) * sizeof(*s->excluded));
             s->excluded[s->nexcluded++] = root.data;
+        } else if (header_value(&s->rd.line, "started") != NULL
+                   || header_value(&s->rd.line, "resumed") != NULL
+                   || header_value(&s->rd.line, "finished") != NULL) {
+            /* Timestamps (section 8): written for whoever reads the file, not used here. */
         } else if (lineno > 1) {
             stream_fail(s, "unknown header line");
         }
@@ -256,7 +261,8 @@ static int classify(const struct hd_record *o, const struct hd_record *d)
     return -1;
 }
 
-typedef void (*merge_fn)(void *ctx, int status, const char *path);
+typedef void (*merge_fn)(void *ctx, int status, const char *path,
+                         const struct hd_record *o, const struct hd_record *d);
 
 /* Merge-join of both streams in canonical order; calls fn for every differing path. */
 static void merge(struct stream *o, struct stream *d, merge_fn fn, void *ctx)
@@ -268,16 +274,16 @@ static void merge(struct stream *o, struct stream *d, merge_fn fn, void *ctx)
 
         if (c < 0) {
             st = classify(&o->cur, NULL);
-            fn(ctx, st, o->cur.path.data);
+            fn(ctx, st, o->cur.path.data, &o->cur, NULL);
             stream_next(o);
         } else if (c > 0) {
             st = classify(NULL, &d->cur);
-            fn(ctx, st, d->cur.path.data);
+            fn(ctx, st, d->cur.path.data, NULL, &d->cur);
             stream_next(d);
         } else {
             st = classify(&o->cur, &d->cur);
             if (st >= 0)
-                fn(ctx, st, o->cur.path.data);
+                fn(ctx, st, o->cur.path.data, &o->cur, &d->cur);
             stream_next(o);
             stream_next(d);
         }
@@ -318,11 +324,14 @@ struct tree_pass {
     int destination;            /* 0: origin section, 1: destination section */
 };
 
-static void tree_pass_fn(void *ctx, int status, const char *path)
+static void tree_pass_fn(void *ctx, int status, const char *path,
+                         const struct hd_record *o, const struct hd_record *d)
 {
     struct tree_pass *p = ctx;
     int in_destination = status == ST_EXTRA || status == ST_ERR_DST;
 
+    (void)o;
+    (void)d;
     if (in_destination != p->destination)
         return;
     p->c->n[status]++;
@@ -435,12 +444,39 @@ struct hash_pass {
     struct hd_counts *c;
 };
 
-static void hash_pass_fn(void *ctx, int status, const char *path)
+/*
+ * The hash field of one side: its digest, the decimal errno of an E entry, or "-" when that
+ * side has no entry at all (section 9). Both come before the path, which is the last field
+ * because it may contain spaces.
+ */
+static void append_hash_field(struct hd_buf *b, const struct hd_record *r)
+{
+    char num[HD_OFF_DEC_LEN];
+
+    if (r == NULL)
+        buf_append_char(b, '-');
+    else if (r->type == 'E')
+        buf_append_str(b, hd_off_to_dec(r->num, num));
+    else
+        buf_append_str(b, r->hash);
+}
+
+static void hash_pass_fn(void *ctx, int status, const char *path,
+                         const struct hd_record *o, const struct hd_record *d)
 {
     struct hash_pass *p = ctx;
 
     p->c->n[status]++;
-    write_status_line(p->diff, &p->line, status, path);
+    buf_clear(&p->line);
+    buf_append_str(&p->line, status_name(status));
+    buf_append_char(&p->line, ' ');
+    append_hash_field(&p->line, o);
+    buf_append_char(&p->line, ' ');
+    append_hash_field(&p->line, d);
+    buf_append_char(&p->line, ' ');
+    hd_escape(&p->line, path);
+    buf_append_char(&p->line, '\n');
+    outfile_write(p->diff, p->line.data, p->line.len);
     if (status != ST_EXTRA && status != ST_ERR_SRC)
         outfile_write(p->list, path, strlen(path) + 1);   /* raw path and its '\0' */
 }
@@ -487,10 +523,17 @@ void tree_excluded(const char *results, const char *name, const char *abs_root,
     stream_close(&t);
 }
 
-void diff_hashes(const char *results, const struct hd_names *n, const char *abs_origin,
-                 const char *abs_destination, struct hd_counts *c, struct hd_buf *cmd)
+void diff_commit(struct hd_outfile *diff, const char *footer, size_t len)
 {
-    struct hd_outfile diff, list, command;
+    outfile_write(diff, footer, len);
+    outfile_commit(diff);
+}
+
+int diff_hashes(const char *results, const struct hd_names *n, const char *abs_origin,
+                const char *abs_destination, struct hd_counts *c, struct hd_buf *cmd,
+                struct hd_outfile *diff)
+{
+    struct hd_outfile list, command;
     struct hash_pass pass;
     struct stream o, d;
     char *lst;
@@ -500,13 +543,15 @@ void diff_hashes(const char *results, const struct hd_names *n, const char *abs_
     stream_open(&d, results, n->hashes, FMT_HASHES, abs_destination);
     if (strcmp(o.mode.data, d.mode.data) != 0)
         hd_die("the '# mode:' lines of the hashes files differ; the lists are not comparable");
-    outfile_open(&diff, results, n->diff_files);
+    outfile_open(diff, results, n->diff_files);
     outfile_open(&list, results, n->rsync_list);
-    write_roots_header(&diff, abs_origin, abs_destination);
-    outfile_write(&diff, "# mode: ", 8);
-    outfile_write(&diff, o.mode.data, o.mode.len);
-    outfile_write(&diff, "\n", 1);
-    pass.diff = &diff;
+    /* The file is read back by --recheck (section 3.5), so it carries its own version. */
+    outfile_write(diff, "# hashdiff-diff: 1\n", 19);
+    write_roots_header(diff, abs_origin, abs_destination);
+    outfile_write(diff, "# mode: ", 8);
+    outfile_write(diff, o.mode.data, o.mode.len);
+    outfile_write(diff, "\n", 1);
+    pass.diff = diff;
     pass.list = &list;
     pass.c = c;
     buf_init(&pass.line);
@@ -515,11 +560,10 @@ void diff_hashes(const char *results, const struct hd_names *n, const char *abs_
     stream_close(&o);
     stream_close(&d);
     if (os_caught_signal()) {
-        outfile_discard(&diff);
+        outfile_discard(diff);
         outfile_discard(&list);
-        return;
+        return 0;
     }
-    outfile_commit(&diff);
     outfile_commit(&list);
 
     buf_clear(cmd);
@@ -539,6 +583,7 @@ void diff_hashes(const char *results, const struct hd_names *n, const char *abs_
         outfile_write(&command, "\n", 1);
     }
     outfile_commit(&command);
+    return 1;
 }
 
 /* The 32 characters must be lowercase hex, as record_parse checks them (section 3.2). */
@@ -607,9 +652,14 @@ int resume_check_hashes(const char *results, const char *name, const char *abs_r
         free(path);
         return 1;
     }
-    if (header_line(&rd) != 0 || strcmp(rd.line.data, "# hashdiff-format: 2") != 0)
+    if (header_line(&rd) != 0) {
         r = 1;
-    else if (header_line(&rd) != 0)
+    } else if (strcmp(rd.line.data, "# hashdiff-format: 3") != 0) {
+        /* A whole header of another version is not a cut-short file: say so. */
+        if (strncmp(rd.line.data, "# hashdiff-format: ", 19) == 0)
+            resume_fail(path, "was written by an older hashdiff");
+        r = 1;
+    } else if (header_line(&rd) != 0)
         r = 1;
     else if (!root_matches(&rd.line, abs_root))
         resume_fail(path, "belongs to another root");

@@ -303,6 +303,7 @@ struct side_state {
     struct hd_stats *st;
     long last_tick;
     size_t check_idx;           /* resume: entry of the last kept line, or (size_t)-1 */
+    struct hd_buf old_headers;  /* resume: the "# started:"/"# resumed:" lines to carry over */
     struct hd_result old_last;  /* resume: the last kept line */
 };
 
@@ -444,7 +445,7 @@ static size_t load_kept(struct side_state *s, const char *results, const char *s
     struct hd_reader rd;
     struct hd_record rec;
     size_t n = 0;
-    int headers = 0;
+    int in_header = 1;
 
     if (reader_open(&rd, path) != 0) {
         free(path);
@@ -455,10 +456,22 @@ static size_t load_kept(struct side_state *s, const char *results, const char *s
         const struct hd_entry *e;
         struct hd_result *r;
 
-        if (headers < 3) {
-            headers++;
+        /*
+         * A "#" line before the first record is a header, and one after it is the
+         * "# finished:" footer of a complete journal, which ends the records (section 8).
+         * The timestamps are kept so the new journal can carry them over (section 3.4).
+         */
+        if (rd.line.len > 0 && rd.line.data[0] == '#') {
+            if (!in_header)
+                break;
+            if (strncmp(rd.line.data, "# started: ", 11) == 0
+                || strncmp(rd.line.data, "# resumed: ", 11) == 0) {
+                buf_append(&s->old_headers, rd.line.data, rd.line.len);
+                buf_append_char(&s->old_headers, '\n');
+            }
             continue;
         }
+        in_header = 0;
         if (n == s->list->count)
             break;
         e = &s->list->items[n];
@@ -769,6 +782,7 @@ int hash_side(const char *root, const struct hd_list *l, const char *results,
     s.st = st;
     s.last_tick = 0;
     s.check_idx = (size_t)-1;
+    buf_init(&s.old_headers);
     st->ignored = l->ignored;
 
     sprintf(name, "hashes-%s.txt", side);
@@ -779,10 +793,19 @@ int hash_side(const char *root, const struct hd_list *l, const char *results,
         outfile_open(&s.out, results, name);
     }
     buf_init(&s.line);
-    buf_append_str(&s.line, "# hashdiff-format: 2\n# root: ");
+    buf_append_str(&s.line, "# hashdiff-format: 3\n# root: ");
     hd_escape(&s.line, abs_root);
     buf_append_str(&s.line, "\n# mode: ");
     buf_append_str(&s.line, opts->mode_line);
+    buf_append_char(&s.line, '\n');
+    /* After the three fixed lines, the start of the run and one line per resume (section 8). */
+    if (s.old_headers.len > 0) {
+        buf_append(&s.line, s.old_headers.data, s.old_headers.len);
+        buf_append_str(&s.line, "# resumed: ");
+    } else {
+        buf_append_str(&s.line, "# started: ");
+    }
+    buf_append_str(&s.line, opts->started);
     buf_append_char(&s.line, '\n');
     outfile_write(&s.out, s.line.data, s.line.len);
     if (resume_source != NULL) {
@@ -804,7 +827,18 @@ int hash_side(const char *root, const struct hd_list *l, const char *results,
     sig = os_caught_signal();
     if (opts->progress && sig == 0)
         progress_line(&s);
+    if (sig == 0) {
+        /* The journal is complete: mark it for whoever reads it (section 8). */
+        char now[HD_TIME_LEN];
+
+        buf_clear(&s.line);
+        buf_append_str(&s.line, "# finished: ");
+        buf_append_str(&s.line, hd_time_text(os_time(), now));
+        buf_append_char(&s.line, '\n');
+        outfile_write(&s.out, s.line.data, s.line.len);
+    }
     buf_free(&s.line);
+    buf_free(&s.old_headers);
     free(s.res);
     if (sig != 0) {
         /* Keep the journal (complete lines in canonical order) for --resume. */

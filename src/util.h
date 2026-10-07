@@ -61,6 +61,15 @@ char *hd_clean_abs(const char *p);
 /* "" or "s", for a count printed next to a noun (section 9). */
 const char *hd_plural(unsigned long n);
 
+/* Room for a timestamp of section 8 and for the stamp of an archive name (section 3.5). */
+#define HD_TIME_LEN 32
+
+/* Local time as "dd/mm/yyyy HH:MM" (section 8). 24-hour on purpose: %I needs %p, which is
+ * locale-dependent and which the standard allows to be empty. Returns buf. */
+char *hd_time_text(long t, char *buf);
+/* Local time as "YYYYMMDDHHMM", which sorts (the archive names of section 3.5). */
+char *hd_time_stamp(long t, char *buf);
+
 /* Path escaping of the output files: '\' -> "\\", LF -> "\n", CR -> "\r". */
 void hd_escape(struct hd_buf *out, const char *s);
 /* Appends the unescaped form of s[0..n); returns -1 if the escaping is invalid. */

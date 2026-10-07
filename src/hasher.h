@@ -50,6 +50,7 @@ struct hd_hashopts {
     int jobs;
     int progress;               /* print progress lines on stderr */
     const char *mode_line;      /* value of the "# mode:" header */
+    const char *started;        /* "# started:" of the run, the same on every side */
 };
 
 /*

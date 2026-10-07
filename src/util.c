@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "os.h"
 #include "util.h"
@@ -269,6 +270,26 @@ char *hd_clean_abs(const char *p)
 const char *hd_plural(unsigned long n)
 {
     return n == 1 ? "" : "s";
+}
+
+static char *format_time(long t, const char *fmt, char *buf)
+{
+    time_t when = (time_t)t;
+    struct tm *tm = localtime(&when);
+
+    if (tm == NULL || strftime(buf, HD_TIME_LEN, fmt, tm) == 0)
+        strcpy(buf, "?");
+    return buf;
+}
+
+char *hd_time_text(long t, char *buf)
+{
+    return format_time(t, "%d/%m/%Y %H:%M", buf);
+}
+
+char *hd_time_stamp(long t, char *buf)
+{
+    return format_time(t, "%Y%m%d%H%M", buf);
 }
 
 void hd_escape(struct hd_buf *out, const char *s)

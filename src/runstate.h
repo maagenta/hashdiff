@@ -10,6 +10,19 @@
  */
 void runstate_clean(const char *results);
 
+/* One side of the run, for paths.txt. */
+struct hd_role {
+    const char *name;   /* side name (section 2.2) */
+    const char *root;   /* cleaned absolute path */
+};
+
+/*
+ * Writes paths.txt and appends the same block to history.txt, which records one block per run
+ * for the life of the directory and is the one file nothing ever removes (section 3.2).
+ */
+void runstate_write_paths(const char *results, const char *started, int file_mode,
+                          const struct hd_role *roles, int nroles);
+
 /* 1 when the directory holds a published hashes file or a journal, so there may be something
  * to resume (section 3.3). */
 int runstate_has_hashes(const char *results);

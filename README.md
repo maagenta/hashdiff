@@ -122,10 +122,12 @@ and so on); the names below are the ones of a run with a single destination.
 
 | File | Stage | Content |
 |---|---|---|
+| `paths.txt` | tree | the cleaned root of every side of this run |
+| `history.txt` | tree | one block per run ever made in this directory, oldest first |
 | `tree-origin.txt`, `tree-destination.txt` | tree | `TYPE SIZE MTIME PATH` per file and symlink |
 | `tree-diff.txt` | tree | ORIGIN vs DESTINATION, in an `## origin` and a `## destination` section |
 | `hashes-origin.txt`, `hashes-destination.txt` | hash | `TYPE HASH SIZE PATH` per file and symlink |
-| `diff-files.txt` | hash | `STATUS PATH` for every path whose content differs |
+| `diff-files.txt` | hash | `STATUS ORIGIN-HASH DESTINATION-HASH PATH` for every path whose content differs |
 | `rsync-files.lst` | hash | paths to copy, each terminated by `\0` |
 | `rsync-command.txt` | hash | the rsync command above (empty if there is nothing to copy) |
 | `tree-changes.txt` | resume | what changed in the trees since the interrupted run |
@@ -133,7 +135,17 @@ and so on); the names below are the ones of a run with a single destination.
 Paths are relative to their root and escaped in text files (`\` → `\\`, newline → `\n`,
 carriage return → `\r`); `rsync-files.lst` holds the raw bytes. Hash types: `F` full MD5,
 `S` sampled hash, `L` symlink (MD5 of its target), `E` error (the hash field is the errno).
-Statuses: `MISSING`, `EXTRA`, `SIZE`, `TYPE`, `HASH`, `ERR-SRC`, `ERR-DST`.
+Statuses: `MISSING`, `EXTRA`, `SIZE`, `TYPE`, `HASH`, `ERR-SRC`, `ERR-DST`. In
+`diff-files.txt` the two hash fields come before the path, because the path is the last field
+and may contain spaces; each one is that side's digest, the decimal errno of an `E` entry, or
+`-` when that side has no entry at all.
+
+Each file records when it was written: the hashes files carry `# started:` and, when that side
+finished, `# finished:`, plus one `# resumed:` line per resume, and `diff-files.txt` ends with
+a footer, starting at `# finished:`, that repeats the summary of that destination with every
+line prefixed by `# `. Timestamps are local time, `dd/mm/yyyy HH:MM`. Two runs over the same
+trees produce the same files once those lines are removed. `history.txt` is the one file
+nothing ever deletes: `--force` keeps it, so it says what the directory has been used for.
 
 FIFOs, sockets and devices are ignored (and counted in the summary). Directories have no
 entries of their own, so empty directories are not compared.

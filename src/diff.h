@@ -77,8 +77,18 @@ void suggest_command(struct hd_buf *out, const struct hd_counts *c, const char *
 
 /* Hash stage: writes diff-files.txt, rsync-files.lst and rsync-command.txt; the rsync
  * command is also returned in *cmd (empty if there is nothing to copy). */
-void diff_hashes(const char *results, const struct hd_names *n, const char *abs_origin,
-                 const char *abs_destination, struct hd_counts *c, struct hd_buf *cmd);
+/*
+ * Writes the records of the diff-files file into *diff and leaves it open: its footer is the
+ * summary of section 9, which only exists once every side has finished, so the caller writes
+ * it with diff_commit(). Returns 1 when *diff is waiting for that, 0 when the run was
+ * interrupted and everything was discarded.
+ */
+int diff_hashes(const char *results, const struct hd_names *n, const char *abs_origin,
+                const char *abs_destination, struct hd_counts *c, struct hd_buf *cmd,
+                struct hd_outfile *diff);
+
+/* Writes the footer of section 9 and publishes the diff-files file. */
+void diff_commit(struct hd_outfile *diff, const char *footer, size_t len);
 
 /* Parses 32 lowercase hex digits into a digest. */
 void hex_to_md5(const char *hex, unsigned char md5[16]);

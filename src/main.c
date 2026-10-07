@@ -53,6 +53,8 @@ struct side {
     int from_child;             /* parent's end of the child -> parent pipe */
     struct hd_stats tree;
     struct hd_stats hashes;
+    struct hd_outfile diff_out; /* destinations: open until its footer is written */
+    int diff_open;
     int hashed;                 /* destinations: its tree matched, so it was hashed */
     int failed;                 /* destinations: its process failed, so it is not compared */
     struct hd_counts counts;    /* destinations: tree or content differences */
@@ -442,6 +444,10 @@ static void setup_hashopts(const struct hd_opts *o, struct hd_buf *mode)
     const char *env = getenv("HASHDIFF_MERGE_GAP");
     char num[HD_OFF_DEC_LEN];
 
+    static char started[HD_TIME_LEN];
+
+    hd_time_text(os_time(), started);
+    hashopts.started = started;
     hashopts.fast = o->fast;
     hashopts.hdd = o->profile == HD_PROFILE_HDD;
     hashopts.jobs = o->jobs;
@@ -492,7 +498,7 @@ static int worse(int a, int b)
 
 /* Section 6.3: samples, sample bytes and average coverage of the S files of every side that
  * was hashed. */
-static void print_fast_metrics(int any_hashed)
+static void fast_metrics_text(int any_hashed, char *out)
 {
     char a[HD_OFF_DEC_LEN + 8], b[HD_OFF_DEC_LEN + 8], num[HD_OFF_DEC_LEN];
     unsigned long files = 0;
@@ -508,21 +514,21 @@ static void print_fast_metrics(int any_hashed)
         total += sides[i].hashes.sampled_total;
     }
     if (files == 0) {
-        printf("sampled files: 0\n");
+        strcpy(out, "sampled files: 0\n");
         return;
     }
     /* Coverage in hundredths of a percent, without overflowing bytes * 10000. */
     basis = total >= 10000 ? bytes / (total / 10000) : bytes * 10000 / total;
-    printf("sampled files: %lu, %s samples, %s read of %s (coverage %ld.%02ld %%)\n", files,
-           hd_off_to_dec(samples, num), hd_human_bytes(bytes, a), hd_human_bytes(total, b),
-           (long)(basis / 100), (long)(basis % 100));
+    sprintf(out, "sampled files: %lu, %s samples, %s read of %s (coverage %ld.%02ld %%)\n",
+            files, hd_off_to_dec(samples, num), hd_human_bytes(bytes, a),
+            hd_human_bytes(total, b), (long)(basis / 100), (long)(basis % 100));
 }
 
 /*
  * The counts line of one destination (section 9). With one destination the labels are the ones
  * of version 1.1; with several, every line names its destination.
  */
-static void print_counts(const struct side *s, int tree)
+static void counts_text(const struct side *s, int tree, char *out)
 {
     static const int tree_order[] = { ST_MISSING, ST_EXTRA, ST_SIZE, ST_TYPE, ST_ERR_SRC,
                                       ST_ERR_DST };
@@ -530,21 +536,39 @@ static void print_counts(const struct side *s, int tree)
                                       ST_ERR_SRC, ST_ERR_DST };
     const int *order = tree ? tree_order : hash_order;
     int n = tree ? 6 : 7, i;
+    char *p = out;
 
     if (!tree && counts_total(&s->counts) == 0) {
         if (ndest == 1)
-            printf("no differences: ORIGIN and DESTINATION match\n");
+            strcpy(out, "no differences: ORIGIN and DESTINATION match\n");
         else
-            printf("no differences with %s\n", s->name);
+            sprintf(out, "no differences with %s\n", s->name);
         return;
     }
-    fputs(tree ? "tree differences" : "differences", stdout);
+    p += sprintf(p, "%s", tree ? "tree differences" : "differences");
     if (ndest > 1)
-        printf(" with %s", s->name);
-    fputc(':', stdout);
+        p += sprintf(p, " with %s", s->name);
+    *p++ = ':';
     for (i = 0; i < n; i++)
-        printf(" %lu %s%s", s->counts.n[order[i]], status_name(order[i]),
-               i + 1 < n ? "," : "\n");
+        p += sprintf(p, " %lu %s%s", s->counts.n[order[i]], status_name(order[i]),
+                     i + 1 < n ? "," : "\n");
+}
+
+/*
+ * Prints one line of the summary and keeps a copy of it, prefixed with "# ", in the footer of
+ * the destinations it concerns (section 9): only == 0 is every one of them that was hashed.
+ */
+static void summary_line(const char *text, struct hd_buf *footers, int only)
+{
+    int i;
+
+    fputs(text, stdout);
+    for (i = 1; i < nsides; i++) {
+        if ((only != 0 && only != i) || !sides[i].diff_open)
+            continue;
+        buf_append_str(&footers[i], "# ");
+        buf_append_str(&footers[i], text);
+    }
 }
 
 /* The stderr messages for a destination whose tree differs from ORIGIN (section 3.1). */
@@ -631,24 +655,35 @@ static int finish_tree_changes(const char *results)
 static int finish_run(const char *results, const struct hd_opts *o, time_t started,
                       int any_hashed)
 {
-    char a[HD_OFF_DEC_LEN + 8];
+    static struct hd_buf footers[HD_MAX_SIDES];
+    char a[HD_OFF_DEC_LEN + 8], line[512], now[HD_TIME_LEN];
     off_t total = 0;
     long elapsed = (long)(time(NULL) - started);
     int status = 0, commands = 0, i;
 
+    /* The footer of a diff-files file begins at "# finished:" (section 9). */
+    for (i = 1; i < nsides; i++) {
+        buf_init(&footers[i]);
+        if (sides[i].diff_open) {
+            buf_append_str(&footers[i], "# finished: ");
+            buf_append_str(&footers[i], hd_time_text(os_time(), now));
+            buf_append_char(&footers[i], '\n');
+        }
+    }
     printf("results: %s\n", results);
     for (i = 0; i < nsides; i++) {
         const struct side *s = &sides[i];
 
         if (i == 0 ? any_hashed : s->hashed) {
-            printf("%s: %lu file%s, %s read, %lu ignored\n", s->name, s->hashes.entries,
-                   hd_plural(s->hashes.entries), hd_human_bytes(s->hashes.bytes_read, a),
-                   s->tree.ignored);
+            sprintf(line, "%s: %lu file%s, %s read, %lu ignored\n", s->name,
+                    s->hashes.entries, hd_plural(s->hashes.entries),
+                    hd_human_bytes(s->hashes.bytes_read, a), s->tree.ignored);
             total += s->hashes.bytes_read;
         } else {
-            printf("%s: %lu file%s, %lu ignored\n", s->name, s->tree.entries,
-                   hd_plural(s->tree.entries), s->tree.ignored);
+            sprintf(line, "%s: %lu file%s, %lu ignored\n", s->name, s->tree.entries,
+                    hd_plural(s->tree.entries), s->tree.ignored);
         }
+        summary_line(line, footers, i);
     }
     if (resuming) {
         static const char *const checks[] = { "no kept entries", "last kept entry verified",
@@ -666,17 +701,22 @@ static int finish_run(const char *results, const struct hd_opts *o, time_t start
         if (elapsed > 0) {
             off_t tenths = total / ((off_t)elapsed * 100000);
 
-            printf("elapsed: %ld s, %ld.%d MB/s\n", elapsed, (long)(tenths / 10),
-                   (int)(tenths % 10));
+            sprintf(line, "elapsed: %ld s, %ld.%d MB/s\n", elapsed, (long)(tenths / 10),
+                    (int)(tenths % 10));
         } else {
-            printf("elapsed: 0 s, - MB/s\n");
+            strcpy(line, "elapsed: 0 s, - MB/s\n");
         }
-        if (o->fast)
-            print_fast_metrics(any_hashed);
+        summary_line(line, footers, 0);
+        if (o->fast) {
+            fast_metrics_text(any_hashed, line);
+            summary_line(line, footers, 0);
+        }
     }
     for (i = 1; i < nsides; i++) {
-        if (!sides[i].failed)
-            print_counts(&sides[i], !sides[i].hashed);
+        if (sides[i].failed)
+            continue;
+        counts_text(&sides[i], !sides[i].hashed, line);
+        summary_line(line, footers, i);
     }
     /* Every command block after every counts line, in command-line order (section 9). */
     for (i = 1; i < nsides; i++) {
@@ -712,6 +752,11 @@ static int finish_run(const char *results, const struct hd_opts *o, time_t start
                    "results.hashdiff/rsync-command-destination-N.txt\n");
     }
     fflush(stdout);
+    for (i = 1; i < nsides; i++) {
+        if (sides[i].diff_open)
+            diff_commit(&sides[i].diff_out, footers[i].data, footers[i].len);
+        buf_free(&footers[i]);
+    }
 
     for (i = 1; i < nsides; i++) {
         struct side *s = &sides[i];
@@ -781,8 +826,22 @@ int main(int argc, char **argv)
     stat_dir("results directory", results, &sres);
     for (i = 0; i < nsides; i++)
         sides[i].pid = 0;
-    if (resuming)
+    if (resuming) {
         prepare_resume(results, mode.data);
+    } else {
+        /*
+         * paths.txt and history.txt, before anything is read (sections 3.2 and 7). A resume
+         * keeps the paths.txt of the run it continues and adds no history block: it is the
+         * same run, already recorded.
+         */
+        struct hd_role roles[HD_MAX_SIDES];
+
+        for (i = 0; i < nsides; i++) {
+            roles[i].name = sides[i].name;
+            roles[i].root = sides[i].root;
+        }
+        runstate_write_paths(results, hashopts.started, 0, roles, nsides);
+    }
 
     /* Tree stage: with --serial, one side at a time, in command-line order. */
     for (i = 0; i < nsides; i++) {
@@ -851,8 +910,9 @@ int main(int argc, char **argv)
             if (sides[i].failed)
                 continue;
             if (sides[i].hashed)
-                diff_hashes(results, &sides[i].names, sides[0].root, sides[i].root,
-                            &sides[i].counts, &sides[i].cmd);
+                sides[i].diff_open = diff_hashes(results, &sides[i].names, sides[0].root,
+                                                 sides[i].root, &sides[i].counts,
+                                                 &sides[i].cmd, &sides[i].diff_out);
             else
                 suggest_command(&sides[i].cmd, &sides[i].counts, sides[0].root,
                                 sides[i].root, o.one_fs, excluded, nexcluded);

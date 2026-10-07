@@ -34,7 +34,7 @@ def test_f_lines_match_hashlib(make_tree, run_hashdiff, parsers, tmp_path):
     assert code == 0, stderr
     for side in (b"origin", b"destination"):
         header, entries = parsers.hashes(os.path.join(results, b"hashes-" + side + b".txt"))
-        assert header[b"hashdiff-format"] == b"2"
+        assert header[b"hashdiff-format"] == b"3"
         assert header[b"mode"] == b"full"
         files = [e for e in entries if e[0] == b"F"]
         assert len(files) == 8

@@ -5,7 +5,8 @@ import stat
 
 import pytest
 
-from conftest import Symlink, printed_command, run_command_line, skip_if_root
+from conftest import (TREE_STAGE_FILES, Symlink, printed_command, run_command_line,
+                      skip_if_root)
 
 
 def test_tree_differences(make_tree, compare, parsers):
@@ -18,8 +19,7 @@ def test_tree_differences(make_tree, compare, parsers):
     assert sections[b"origin"] == [(b"MISSING", b"missing"), (b"SIZE", b"size"),
                                    (b"TYPE", b"type")]
     assert sections[b"destination"] == [(b"EXTRA", b"extra")]
-    assert sorted(os.listdir(results)) == [b"tree-destination.txt", b"tree-diff.txt",
-                                           b"tree-origin.txt"]
+    assert sorted(os.listdir(results)) == sorted(TREE_STAGE_FILES)
     assert b"trees differ; nothing was hashed" in err
     assert b"1 file exists only in DESTINATION" in err
     assert b"will delete it." in err

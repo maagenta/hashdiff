@@ -142,9 +142,16 @@ def _read_lines(path):
 
 
 def _split_header(lines):
+    """The leading "# key: value" lines, stopping at the footer.
+
+    The footer of section 9 begins at "# finished:" and repeats keys of the header, such as
+    "# origin:", with another meaning, so it is not part of the header even when there are no
+    records between the two.
+    """
     header = {}
     i = 0
-    while i < len(lines) and lines[i].startswith(b"# "):
+    while i < len(lines) and lines[i].startswith(b"# ") \
+            and not lines[i].startswith(b"# finished:"):
         key, _, value = lines[i][2:].partition(b": ")
         header[key] = value
         i += 1
@@ -152,10 +159,15 @@ def _split_header(lines):
 
 
 def parse_hashes(path):
-    """Returns (header dict, [(type, hash, size, path)]) of a hashes-*.txt file."""
+    """Returns (header dict, [(type, hash, size, path)]) of a hashes file.
+
+    The "# finished:" footer of section 8 ends the records.
+    """
     header, lines = _split_header(_read_lines(path))
     entries = []
     for line in lines:
+        if line.startswith(b"#"):
+            break
         kind, digest, size, rel = line.split(b" ", 3)
         entries.append((kind, digest, size, unescape(rel)))
     return header, entries
@@ -172,22 +184,41 @@ def parse_tree(path):
 
 
 def parse_report(path):
-    """Parses diff-files.txt, tree-diff.txt or tree-changes.txt.
+    """Parses a diff-files, tree-diff or tree-changes file.
 
     Returns (header dict, {section: [(status, path)]}); lines before any "## " section are
-    stored under the None key.
+    stored under the None key. A diff-files record carries the two hashes of section 9 between
+    the status and the path; they are dropped here and parse_diff returns them. Footer lines,
+    which begin at "# finished:", are not records (section 9).
     """
     header, lines = _split_header(_read_lines(path))
+    is_diff = header.get(b"hashdiff-diff") is not None
     sections = {None: []}
     current = None
     for line in lines:
+        if line.startswith(b"#") and not line.startswith(b"## "):
+            break                       # the footer
         if line.startswith(b"## "):
             current = line[3:]
             sections.setdefault(current, [])
             continue
-        status, rel = line.split(b" ", 1)
-        sections[current].append((status, unescape(rel)))
+        fields = line.split(b" ", 3 if is_diff else 1)
+        sections[current].append((fields[0], unescape(fields[-1])))
     return header, sections
+
+
+def parse_diff(path):
+    """Returns (header, [(status, origin hash, destination hash, path)], footer lines)."""
+    header, lines = _split_header(_read_lines(path))
+    assert header.get(b"hashdiff-diff") == b"1", header
+    records, footer = [], []
+    for line in lines:
+        if footer or line.startswith(b"# finished:"):
+            footer.append(line)
+            continue
+        status, origin, destination, rel = line.split(b" ", 3)
+        records.append((status, origin, destination, unescape(rel)))
+    return header, records, footer
 
 
 def parse_rsync_list(path):
@@ -205,6 +236,7 @@ def parsers():
         hashes = staticmethod(parse_hashes)
         tree = staticmethod(parse_tree)
         report = staticmethod(parse_report)
+        diff = staticmethod(parse_diff)
         rsync_list = staticmethod(parse_rsync_list)
     return Parsers
 
@@ -251,11 +283,15 @@ def strip_time(data):
 
 
 def snapshot_results(results):
-    """{file name: contents without the time-dependent lines} for one results.hashdiff."""
+    """{file name: contents without the time-dependent lines} for one results.hashdiff.
+
+    history.txt is left out: it grows by one block per run on purpose (section 3.2), so it is
+    the one file that two runs over the same trees must not have in common.
+    """
     out = {}
     for name in sorted(os.listdir(results)):
         path = os.path.join(results, name)
-        if os.path.isfile(path):
+        if name != b"history.txt" and os.path.isfile(path):
             out[name] = strip_time(read_bytes(path))
     return out
 
@@ -264,6 +300,13 @@ def snapshot_results(results):
 def snapshot():
     """snapshot(results) compares two runs byte for byte, ignoring the timestamps."""
     return snapshot_results
+
+
+RESULT_FILES = [b"paths.txt", b"history.txt", b"tree-origin.txt", b"tree-destination.txt",
+                b"tree-diff.txt", b"hashes-origin.txt", b"hashes-destination.txt",
+                b"diff-files.txt", b"rsync-files.lst", b"rsync-command.txt"]
+TREE_STAGE_FILES = [b"paths.txt", b"history.txt", b"tree-origin.txt",
+                    b"tree-destination.txt", b"tree-diff.txt"]
 
 
 def results_line(stdout):

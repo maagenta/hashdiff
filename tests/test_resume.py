@@ -6,12 +6,11 @@ import time
 
 import pytest
 
-from conftest import Symlink, read_bytes
+from conftest import RESULT_FILES, Symlink, read_bytes, strip_time
 
-RESULT_FILES = [b"tree-origin.txt", b"tree-destination.txt", b"tree-diff.txt",
-                b"hashes-origin.txt", b"hashes-destination.txt", b"diff-files.txt",
-                b"rsync-files.lst", b"rsync-command.txt"]
 DIFF_OUTPUTS = [b"diff-files.txt", b"rsync-files.lst", b"rsync-command.txt"]
+# "# hashdiff-format:", "# root:", "# mode:" and "# started:" (section 8).
+HEADER_LINES = 4
 
 
 def spec(n=40):
@@ -48,7 +47,8 @@ class Runs:
 
     def files(self, out):
         results = os.path.join(out, b"results.hashdiff")
-        files = {n: read_bytes(os.path.join(results, n)) for n in RESULT_FILES}
+        files = {n: strip_time(read_bytes(os.path.join(results, n)))
+                 for n in RESULT_FILES if n != b"history.txt"}
         files[b"rsync-command.txt"] = files[b"rsync-command.txt"].replace(out, b"OUT")
         return files
 
@@ -111,8 +111,8 @@ def test_simulated_interruption(make_tree, run_hashdiff, tmp_path, published):
     assert runs.run()[0] == 1
     data = {side: read_bytes(runs.path(b"hashes-%s.txt" % side))
             for side in (b"origin", b"destination")}
-    cuts = {b"origin": line_offset(data[b"origin"], 3 + 30, 10),     # middle of a line
-            b"destination": line_offset(data[b"destination"], 3 + 12)}
+    cuts = {b"origin": line_offset(data[b"origin"], HEADER_LINES + 30, 10),     # middle of a line
+            b"destination": line_offset(data[b"destination"], HEADER_LINES + 12)}
     if published:
         cuts[published] = None
     runs.simulate_interruption(cuts)
@@ -129,8 +129,8 @@ def test_wrong_hash_in_last_kept_line(make_tree, run_hashdiff, tmp_path):
     runs = Runs(run_hashdiff, tmp_path, origin, destination)
     assert runs.run()[0] == 1
     data = read_bytes(runs.path(b"hashes-origin.txt"))
-    end = line_offset(data, 3 + 20)
-    last = line_offset(data, 3 + 19)
+    end = line_offset(data, HEADER_LINES + 20)
+    last = line_offset(data, HEADER_LINES + 19)
     damaged = data[:last + 2] + b"0" * 32 + data[last + 34:end]
     runs.simulate_interruption({b"origin": None, b"destination": None})
     os.remove(runs.path(b"hashes-origin.txt"))
@@ -150,7 +150,7 @@ def test_invalid_line_in_the_middle(make_tree, run_hashdiff, tmp_path, corrupt):
     assert runs.run()[0] == 1
     data = read_bytes(runs.path(b"hashes-origin.txt"))
     lines = data.split(b"\n")
-    bad = 3 + 15
+    bad = HEADER_LINES + 15
     if corrupt == "bad-hex":
         lines[bad] = lines[bad][:2] + b"Z" + lines[bad][3:]
     elif corrupt == "unsorted":
@@ -174,8 +174,8 @@ def test_trees_changed_after_interruption(make_tree, run_hashdiff, tmp_path, par
     runs = Runs(run_hashdiff, tmp_path, origin, destination)
     assert runs.run()[0] == 1
     runs.simulate_interruption({
-        b"origin": line_offset(read_bytes(runs.path(b"hashes-origin.txt")), 3 + 20),
-        b"destination": line_offset(read_bytes(runs.path(b"hashes-destination.txt")), 3 + 10)})
+        b"origin": line_offset(read_bytes(runs.path(b"hashes-origin.txt")), HEADER_LINES + 20),
+        b"destination": line_offset(read_bytes(runs.path(b"hashes-destination.txt")), HEADER_LINES + 10)})
     saved = {n: read_bytes(runs.path(n)) for n in os.listdir(runs.results)}
 
     def path(root, rel):
@@ -299,7 +299,7 @@ def test_real_interruption(make_tree, run_hashdiff, hashdiff_bin, tmp_path, pars
     proc = subprocess.Popen([hashdiff_bin, origin, destination, "-o", runs.out, "-j", jobs],
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE)
-    if not wait_for_lines(journal, 3 + 50, proc):
+    if not wait_for_lines(journal, HEADER_LINES + 50, proc):
         proc.kill()
         proc.communicate()
         pytest.skip("the run finished before it could be interrupted")
