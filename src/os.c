@@ -204,6 +204,56 @@ int os_isatty(int fd)
     return isatty(fd);
 }
 
+/* Never closed on purpose: see os.h. */
+static int lock_fd = -1;
+
+static void whole_file(struct flock *fl, int type)
+{
+    fl->l_type = (short)type;
+    fl->l_whence = SEEK_SET;
+    fl->l_start = 0;
+    fl->l_len = 0;      /* 0 means "to the end", however the file grows */
+}
+
+static int try_lock(int fd)
+{
+    struct flock fl;
+    int r;
+
+    whole_file(&fl, F_WRLCK);
+    while ((r = fcntl(fd, F_SETLK, &fl)) != 0 && errno == EINTR)
+        whole_file(&fl, F_WRLCK);
+    return r;
+}
+
+int os_lock(const char *path, long *pid)
+{
+    struct flock fl;
+
+    *pid = 0;
+    lock_fd = open(path, O_RDWR | O_CREAT, 0666);
+    if (lock_fd < 0)
+        return -1;
+    if (try_lock(lock_fd) == 0)
+        return 0;
+    if (errno != EACCES && errno != EAGAIN) {
+        /* ENOLCK, EINVAL: no locking here, not a busy directory. No lock to lose. */
+        (void)close(lock_fd);
+        lock_fd = -1;
+        return -1;
+    }
+    whole_file(&fl, F_WRLCK);
+    if (fcntl(lock_fd, F_GETLK, &fl) == 0) {
+        if (fl.l_type == F_UNLCK && try_lock(lock_fd) == 0)
+            return 0;       /* the holder released it in between; one retry, not a loop */
+        if (fl.l_type != F_UNLCK)
+            *pid = (long)fl.l_pid;
+    }
+    (void)close(lock_fd);
+    lock_fd = -1;
+    return 1;
+}
+
 int os_pipe(int fds[2])
 {
     return pipe(fds);

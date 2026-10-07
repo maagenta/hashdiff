@@ -51,6 +51,16 @@ int os_unlink(const char *path);
 char *os_getcwd(void);   /* malloc'd; NULL with errno on failure */
 int os_isatty(int fd);
 
+/*
+ * Section 3.6: opens path and takes an advisory write lock on the whole file with
+ * fcntl(F_SETLK). The descriptor is kept inside os.c and never closed, because POSIX drops
+ * every lock a process holds on a file as soon as it closes any descriptor to it; the kernel
+ * releases the lock when the process ends, through any exit path. Returns 0 when the lock is
+ * held by this process, 1 when another one holds it (*pid is its pid, or 0 when the system
+ * cannot say), or -1 when this filesystem does not do locking (errno is set).
+ */
+int os_lock(const char *path, long *pid);
+
 int os_pipe(int fds[2]);
 /* Returns the child pid in the parent, 0 in the child, -1 on failure. */
 long os_fork(void);

@@ -18,6 +18,7 @@ struct hd_opts {
     char *output;        /* cleaned absolute directory where results.hashdiff is created */
     int resume;
     int force;
+    int ignore_lock;
     int fast;
     off_t gap;
     off_t block;         /* 0: default of the profile */

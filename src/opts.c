@@ -11,7 +11,7 @@
 
 enum opt_id {
     OPT_OUTPUT, OPT_RESUME, OPT_FORCE, OPT_FAST, OPT_GAP, OPT_BLOCK, OPT_PROFILE, OPT_JOBS,
-    OPT_SERIAL, OPT_ONE_FS, OPT_NDEST, OPT_QUIET, OPT_HELP, OPT_VERSION
+    OPT_SERIAL, OPT_ONE_FS, OPT_NDEST, OPT_IGNORE_LOCK, OPT_QUIET, OPT_HELP, OPT_VERSION
 };
 
 struct optdef {
@@ -33,6 +33,7 @@ static const struct optdef optdefs[] = {
     { 0, "serial", 0, OPT_SERIAL },
     { 'x', "one-file-system", 0, OPT_ONE_FS },
     { 0, "number-of-destinations", 1, OPT_NDEST },
+    { 0, "ignore-lock", 0, OPT_IGNORE_LOCK },
     { 'q', "quiet", 0, OPT_QUIET },
     { 'h', "help", 0, OPT_HELP },
     { 'V', "version", 0, OPT_VERSION }
@@ -65,6 +66,7 @@ static const char *const help_lines[] = {
     "  -x, --one-file-system   Do not cross mount points",
     "      --number-of-destinations N",
     "                          Fail unless exactly N destinations were given",
+    "      --ignore-lock       Do not refuse when another run holds the lock",
     "  -q, --quiet             No progress on stderr",
     "  -h, --help              Show this help and exit",
     "  -V, --version           Show the version and exit",
@@ -207,6 +209,9 @@ static int apply(const struct optdef *d, const char *val, struct hd_opts *o, str
                         "64):", val);
             return OPTS_ERROR;
         }
+        break;
+    case OPT_IGNORE_LOCK:
+        o->ignore_lock = 1;
         break;
     case OPT_SERIAL:
         o->serial = 1;
@@ -405,6 +410,7 @@ int opts_parse(int argc, char **argv, struct hd_opts *o)
     o->output = NULL;
     o->resume = 0;
     o->force = 0;
+    o->ignore_lock = 0;
     o->fast = 0;
     o->gap = (off_t)64 * 1024 * 1024;
     o->block = 0;

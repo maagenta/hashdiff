@@ -6,7 +6,8 @@ import time
 
 import pytest
 
-from conftest import RESULT_FILES, Symlink, read_bytes, run_on_pty, strip_time
+from conftest import (NOT_COMPARABLE, RESULT_FILES, Symlink, read_bytes, run_on_pty,
+                      strip_time)
 
 DIFF_OUTPUTS = [b"diff-files.txt", b"rsync-files.lst", b"rsync-command.txt"]
 # "# hashdiff-format:", "# root:", "# mode:" and "# started:" (section 8).
@@ -48,7 +49,7 @@ class Runs:
     def files(self, out):
         results = os.path.join(out, b"results.hashdiff")
         files = {n: strip_time(read_bytes(os.path.join(results, n)))
-                 for n in RESULT_FILES if n != b"history.txt"}
+                 for n in RESULT_FILES if n not in NOT_COMPARABLE}
         files[b"rsync-command.txt"] = files[b"rsync-command.txt"].replace(out, b"OUT")
         return files
 

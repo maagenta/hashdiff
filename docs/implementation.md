@@ -1308,6 +1308,8 @@ order in which they were asked for: phase 10 renames every per-destination file 
 makes a side name the key of every output, so doing it before the formats and the prompts
 writes them once instead of twice.
 
+Phases 13, 14 and 15 depend on nothing in each other and may land in any order.
+
 9. Path cleaning in util and its use for ORIGIN, the destinations, --output and every root,
    message and command (section 2.1); the singular of the counts and the fixed shape of
    `elapsed:` (section 9); the NOTE after a command (section 9). Tests 27 and 38. README: the

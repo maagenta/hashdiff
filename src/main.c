@@ -164,28 +164,36 @@ static void state_flags(const char *results, int state)
     hd_die("'%s' holds a finished run; use --force to start over", results);
 }
 
+/* One answer from stdin, trimmed. EOF or an interruption ends the run (sections 3.3, 3.6). */
+static void read_answer(char *line, size_t size)
+{
+    size_t n = 0;
+    ssize_t r;
+    char c;
+
+    while ((r = os_read(0, &c, 1)) == 1 && c != '\n')
+        if (n + 1 < size)
+            line[n++] = c;
+    if (r < 0 && errno == EINTR && os_caught_signal())
+        hd_exit(128 + os_caught_signal());
+    if (r <= 0 && n == 0) {
+        fputc('\n', stderr);
+        hd_exit(2);
+    }
+    while (n > 0 && (line[n - 1] == ' ' || line[n - 1] == '\r'))
+        n--;
+    line[n] = '\0';
+}
+
 /* Asks on the terminal what to do with an existing results.hashdiff: 'r' or 'o'. */
 static char ask_existing(const char *output, int state, const struct hd_runstate *rs)
 {
     for (;;) {
-        char line[64], c;
-        size_t n = 0;
-        ssize_t r;
+        char line[64];
 
         state_question(output, state, rs);
         fflush(stderr);
-        while ((r = os_read(0, &c, 1)) == 1 && c != '\n')
-            if (n + 1 < sizeof(line))
-                line[n++] = c;
-        if (r < 0 && errno == EINTR && os_caught_signal())
-            hd_exit(128 + os_caught_signal());
-        if (r <= 0 && n == 0) {
-            fputc('\n', stderr);
-            hd_exit(2);
-        }
-        while (n > 0 && (line[n - 1] == ' ' || line[n - 1] == '\r'))
-            n--;
-        line[n] = '\0';
+        read_answer(line, sizeof(line));
         if (state == RUNSTATE_INTERRUPTED
             && (strcmp(line, "r") == 0 || strcmp(line, "R") == 0
                 || strcmp(line, "resume") == 0))
@@ -195,9 +203,49 @@ static char ask_existing(const char *output, int state, const struct hd_runstate
             return 'o';
         if (strcmp(line, "a") == 0 || strcmp(line, "A") == 0 || strcmp(line, "abort") == 0)
             hd_exit(2);
-        if (r <= 0)
-            hd_exit(2);
     }
+}
+
+/*
+ * Section 3.6: one run at a time in one results.hashdiff. Two runs appending to one journal
+ * leave a file that is not a canonical prefix of anything and that a resume would trust.
+ */
+static void take_lock(const char *results, const struct hd_opts *o)
+{
+    char *path = hd_path_join(results, "lock");
+    long pid = 0;
+    int r = os_lock(path, &pid);
+
+    if (r < 0) {
+        hd_warn("cannot lock '%s': %s; another run on the same results.hashdiff would not be "
+                "noticed", path, strerror(errno));
+    } else if (r > 0 && !o->ignore_lock) {
+        if (!os_isatty(0) || !os_isatty(2)) {
+            if (pid > 0)
+                hd_die("results.hashdiff in %s is in use by process %ld; use --ignore-lock to "
+                       "run anyway", o->output, pid);
+            hd_die("results.hashdiff in %s is in use by another run; use --ignore-lock to run "
+                   "anyway", o->output);
+        }
+        for (;;) {
+            char line[64];
+
+            if (pid > 0)
+                fprintf(stderr, "results.hashdiff in %s is in use by process %ld.\n",
+                        o->output, pid);
+            else
+                fprintf(stderr, "results.hashdiff in %s is in use by another run.\n",
+                        o->output);
+            fputs("continue anyway? [y]es or [a]bort? ", stderr);
+            fflush(stderr);
+            read_answer(line, sizeof(line));
+            if (strcmp(line, "y") == 0 || strcmp(line, "Y") == 0 || strcmp(line, "yes") == 0)
+                break;
+            if (strcmp(line, "a") == 0 || strcmp(line, "A") == 0 || strcmp(line, "abort") == 0)
+                hd_exit(2);
+        }
+    }
+    free(path);
 }
 
 /* Creates DIR/results.hashdiff, or decides what to do with an existing one; returns 1 if
@@ -207,13 +255,15 @@ static int prepare_results(const char *results, const struct hd_opts *o,
 {
     struct hd_runstate rs;
     struct os_stat st;
-    int state;
+    int state, fresh = os_mkdir(results) == 0;
 
-    if (os_mkdir(results) == 0)
-        return 0;
-    if (errno != EEXIST)
+    if (!fresh && errno != EEXIST)
         hd_die("cannot create '%s': %s", results, strerror(errno));
     stat_dir("results directory", results, &st);
+    /* Before the decision below, which itself writes (sections 3 and 3.6). */
+    take_lock(results, o);
+    if (fresh)
+        return 0;
     /*
      * --force comes before every check: a directory whose paths.txt is missing or describes
      * another run is exactly what it is for, and every message below suggests it.

@@ -308,13 +308,12 @@ def strip_time(data):
 def snapshot_results(results):
     """{file name: contents without the time-dependent lines} for one results.hashdiff.
 
-    history.txt is left out: it grows by one block per run on purpose (section 3.2), so it is
-    the one file that two runs over the same trees must not have in common.
+    history.txt and lock are left out: see NOT_COMPARABLE.
     """
     out = {}
     for name in sorted(os.listdir(results)):
         path = os.path.join(results, name)
-        if name != b"history.txt" and os.path.isfile(path):
+        if name not in NOT_COMPARABLE and os.path.isfile(path):
             out[name] = strip_time(read_bytes(path))
     return out
 
@@ -325,10 +324,15 @@ def snapshot():
     return snapshot_results
 
 
-RESULT_FILES = [b"paths.txt", b"history.txt", b"tree-origin.txt", b"tree-destination.txt",
-                b"tree-diff.txt", b"hashes-origin.txt", b"hashes-destination.txt",
-                b"diff-files.txt", b"rsync-files.lst", b"rsync-command.txt"]
-TREE_STAGE_FILES = [b"paths.txt", b"history.txt", b"tree-origin.txt",
+# Everything a single-destination run leaves in results.hashdiff. history.txt grows by one
+# block per run and lock is this run's own (sections 3.2 and 3.6), so neither is comparable
+# between two runs over the same trees.
+NOT_COMPARABLE = (b"history.txt", b"lock")
+RESULT_FILES = [b"paths.txt", b"history.txt", b"lock", b"tree-origin.txt",
+                b"tree-destination.txt", b"tree-diff.txt", b"hashes-origin.txt",
+                b"hashes-destination.txt", b"diff-files.txt", b"rsync-files.lst",
+                b"rsync-command.txt"]
+TREE_STAGE_FILES = [b"paths.txt", b"history.txt", b"lock", b"tree-origin.txt",
                     b"tree-destination.txt", b"tree-diff.txt"]
 
 
