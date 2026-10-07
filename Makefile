@@ -31,10 +31,12 @@ testhook: $(BUILD)/hashdiff-testhook
 $(BUILD)/hashdiff: $(MAIN_OBJS)
 	@mkdir -p $(BUILD)
 	$(CC) $(ALL_CFLAGS) -o $@ $(MAIN_OBJS)
+	@echo "Built $(CURDIR)/$@"
 
 $(BUILD)/hashdiff-testhook: $(TESTHOOK_OBJS)
 	@mkdir -p $(BUILD)
 	$(CC) $(ALL_CFLAGS) -o $@ $(TESTHOOK_OBJS)
+	@echo "Built $(CURDIR)/$@"
 
 $(OBJ)/%.o: src/%.c $(HDRS)
 	@mkdir -p $(OBJ)
