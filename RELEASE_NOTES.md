@@ -9,10 +9,19 @@ Below the versions, **Design notes** keeps the reasoning behind what shipped, an
 what has not been designed yet. For anything implemented, `docs/implementation.md` and the code
 are the truth; the notes are the record of what was decided and why.
 
-## v1.1 (unreleased)
+## v2.0 (unreleased)
 
 Until the tag exists, use the v1.0 release:
 <https://github.com/maagenta/hashdiff/releases/tag/v1.0>
+
+This version was called 1.1 while it was being written, and the commits up to and including
+"Phase 16: the v1.1 changes list and the version decision" name it that way, as do the phase
+descriptions of section 12 of `docs/implementation.md`. It was never released under that
+number. It became 2.0 because a `results.hashdiff` written by 1.0 cannot be read any more: a
+minor version must not invalidate a run already under way, and reserving the major for it
+leaves the number saying so to anyone who upgrades without reading these notes. The command
+line itself is compatible: no flag of 1.0 changed meaning, and with one destination every file
+name and every line of the summary is what it was.
 
 ### Changes
 
@@ -89,7 +98,7 @@ Changed:
 
 ## Design notes
 
-All ten items below shipped in v1.1, as phases 9 to 15 of section 12 of
+All ten items below shipped in v2.0, as phases 9 to 15 of section 12 of
 `docs/implementation.md`. **The specification and the code are the truth now**; these notes are
 kept for the intent behind each item, for the obstacles that were found before writing any of
 it, and for the record of what every **Decide** was resolved to. Each one says which section of

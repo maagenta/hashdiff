@@ -61,7 +61,7 @@ implementing. Do not add functionality not described here.
                             Fail unless exactly N destinations were given (section 2.2)
     -q, --quiet             No progress on stderr
     -h, --help
-    -V, --version           Print "hashdiff 1.1" and exit 0
+    -V, --version           Print "hashdiff 2.0" and exit 0
 
 - SIZE: integer with optional K, M, G or T suffix (base 1024, case-insensitive), with
   overflow detection. --gap >= 1; --block >= 512. Accepted forms: `--opt VALUE`,
@@ -1302,7 +1302,7 @@ earlier only if marked xfail with a reason.
    how to run the tests (make test-deps, make test, HASHDIFF_SLOW_TESTS=1) and the CI
    badge. Test 16.
 
-Phases 1 to 8 are version 1.0. Phases 9 to 16 are the rest of version 1.1: the work of
+Phases 1 to 8 are version 1.0. Phases 9 to 16 are the rest of version 2.0: the work of
 sections 2.1, 2.2, 2.3, 3.2, 3.3, 3.5, 3.6 and the parts of 3, 3.1, 7, 8 and 9 that depend on
 them. Their order is not the
 order in which they were asked for: phase 10 renames every per-destination file and is what
@@ -1337,11 +1337,13 @@ Phases 13, 14 and 15 depend on nothing in each other and may land in any order.
     directory, the `F_GETLK` message with the holder's pid, --ignore-lock, and the warning
     that lets a filesystem without locking through. Test 39. README: that one run at a time
     writes a results.hashdiff, what the flag does, and the two things the lock does not see.
-16. README and RELEASE_NOTES.md sweep. The version does not move: 1.1 was never released, so
-    everything from phase 9 on ships in it and the break in the on-disk formats is from 1.0 to
-    1.1, which the Changes list of RELEASE_NOTES.md has to say. The three places that carry the
-    number already agree (the checklist in RELEASE_NOTES.md lists them); they only move when 1.1
-    is published and the next version starts.
+16. README and RELEASE_NOTES.md sweep. Everything from phase 9 on ships in one version, and
+    the break in the on-disk formats is from 1.0 to it, which the Changes list of
+    RELEASE_NOTES.md has to say. That version is 2.0: the phases of this section were written
+    while it was called 1.1, and the number was raised because a results directory of 1.0
+    cannot be read any more, which a minor version must not do to a run already under way.
+    The three places that carry the number must agree (the checklist in RELEASE_NOTES.md lists
+    them); they only move again when 2.0 is published and the next version starts.
 
 ## 13. Continuous integration (GitHub Actions)
 

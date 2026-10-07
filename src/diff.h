@@ -42,7 +42,7 @@ unsigned long counts_total(const struct hd_counts *c);
  * The result files of one side and of one destination's comparison (section 3). tree and
  * hashes are the files of that side; the four names of the comparison carry "-DEST" only
  * when the run has several destinations, so a single-destination run writes the names of
- * version 1.1.
+ * version 1.0.
  */
 struct hd_names {
     char tree[48];              /* tree-SIDE.txt */

@@ -78,7 +78,7 @@ static int side_failed;         /* a destination process failed: exit 2 (section
 
 /*
  * Side names and file names (sections 2.2 and 3). With one destination every name is the one
- * version 1.1 used, so a single-destination run writes exactly the files it wrote before.
+ * version 1.0 used, so a single-destination run writes exactly the files it wrote before.
  */
 /* Section 2.3: a side's root is the file's parent directory and its list is the file's name. */
 static void split_file(struct side *s)
@@ -718,7 +718,7 @@ static void fast_metrics_text(int any_hashed, char *out)
 
 /*
  * The counts line of one destination (section 9). With one destination the labels are the ones
- * of version 1.1; with several, every line names its destination.
+ * of version 1.0; with several, every line names its destination.
  */
 static void counts_text(const struct side *s, int tree, char *out)
 {
