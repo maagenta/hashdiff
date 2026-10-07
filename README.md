@@ -18,7 +18,7 @@ check cannot see.
 
 A C89 compiler and **GNU make** are required (on FreeBSD, run `gmake`).
 
-    make                         # builds ./hashdiff
+    make                         # builds build/hashdiff
     make install                 # installs to /usr/local/bin (PREFIX=/usr/local)
     make install PREFIX=$HOME/.local
 
@@ -178,7 +178,7 @@ virtual environment in `tests/venv` (ignored by git), install the dependencies a
     make test-deps PYTHON=tests/venv/bin/python
     make test PYTHON=tests/venv/bin/python
 
-`make test` builds `hashdiff` and the test-only driver `build/hashdiff-testhook`, then runs
+`make test` builds `build/hashdiff` and the test-only driver `build/hashdiff-testhook`, then runs
 `python -m pytest tests`. Slow tests (a full read of a sparse file over 4 GiB) run only with
 `HASHDIFF_SLOW_TESTS=1`:
 

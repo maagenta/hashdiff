@@ -32,7 +32,7 @@ def _binary(env_name, default):
 
 @pytest.fixture(scope="session")
 def hashdiff_bin():
-    return _binary("HASHDIFF_BIN", "hashdiff")
+    return _binary("HASHDIFF_BIN", "build/hashdiff")
 
 
 @pytest.fixture(scope="session")

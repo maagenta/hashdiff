@@ -88,5 +88,5 @@ ehthumbs_vista.db
 [Dd]esktop.ini
 $RECYCLE.BIN/
 
-# hashdiff binary
-/hashdiff
+# Files of the project
+docs/suggestions.md
