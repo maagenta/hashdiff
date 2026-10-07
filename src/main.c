@@ -12,6 +12,7 @@
 #include "hasher.h"
 #include "opts.h"
 #include "os.h"
+#include "plan.h"
 #include "util.h"
 #include "walk.h"
 
@@ -151,6 +152,8 @@ static void child_send(int fd, const struct msg *m)
         hd_die("cannot write to the parent process: %s", strerror(errno));
 }
 
+static struct hd_hashopts hashopts;
+
 static void run_child(struct side *s, int in_fd, int out_fd, const char *results,
                       const struct hd_opts *o, const struct hd_exclude *excl, size_t nexcl)
 {
@@ -181,7 +184,7 @@ static void run_child(struct side *s, int in_fd, int out_fd, const char *results
     memset(&m, 0, sizeof(m));
     m.kind = MSG_HASHES;
     stats_init(&m.stats);
-    hash_list(s->root, &list, results, s->name, s->abs_root, "full", &m.stats);
+    hash_list(s->root, &list, results, s->name, s->abs_root, &hashopts, &m.stats);
     child_send(out_fd, &m);
     list_free(&list);
     hd_exit(m.stats.errors > 0 ? 3 : 0);
@@ -286,6 +289,57 @@ static void close_pipes(struct side *s)
     os_close(s->from_child);
 }
 
+/* Hash stage parameters and the "# mode:" line (section 8 of the specification). */
+static void setup_hashopts(const struct hd_opts *o, struct hd_buf *mode)
+{
+    const struct hd_profile *prof = plan_profile(o->profile);
+    const char *env = getenv("HASHDIFF_MERGE_GAP");
+    char num[HD_OFF_DEC_LEN];
+
+    hashopts.fast = o->fast;
+    hashopts.gap = o->gap;
+    hashopts.block = o->block > 0 ? o->block : prof->default_block;
+    hashopts.seek_bytes = prof->seek_bytes;
+    hashopts.merge_gap = prof->seek_bytes;
+    if (env != NULL && opts_parse_size(env, &hashopts.merge_gap) != 0)
+        hd_die("invalid HASHDIFF_MERGE_GAP '%s'", env);
+    buf_init(mode);
+    if (!o->fast) {
+        buf_append_str(mode, "full");
+    } else {
+        buf_append_str(mode, "fast gap=");
+        buf_append_str(mode, hd_off_to_dec(hashopts.gap, num));
+        buf_append_str(mode, " block=");
+        buf_append_str(mode, hd_off_to_dec(hashopts.block, num));
+        buf_append_str(mode, " profile=");
+        buf_append_str(mode, prof->name);
+        buf_append_str(mode, " seek_bytes=");
+        buf_append_str(mode, hd_off_to_dec(hashopts.seek_bytes, num));
+    }
+    hashopts.mode_line = mode->data;
+}
+
+/* Section 6.3: samples, sample bytes and average coverage of the S files. */
+static void print_fast_metrics(void)
+{
+    char a[HD_OFF_DEC_LEN + 8], b[HD_OFF_DEC_LEN + 8], num[HD_OFF_DEC_LEN];
+    unsigned long files = sides[0].hashes.sampled + sides[1].hashes.sampled;
+    off_t samples = sides[0].hashes.samples + sides[1].hashes.samples;
+    off_t bytes = sides[0].hashes.sample_bytes + sides[1].hashes.sample_bytes;
+    off_t total = sides[0].hashes.sampled_total + sides[1].hashes.sampled_total;
+    off_t basis;
+
+    if (files == 0) {
+        printf("sampled files: 0\n");
+        return;
+    }
+    /* Coverage in hundredths of a percent, without overflowing bytes * 10000. */
+    basis = total >= 10000 ? bytes / (total / 10000) : bytes * 10000 / total;
+    printf("sampled files: %lu, %s samples, %s read of %s (coverage %ld.%02ld %%)\n", files,
+           hd_off_to_dec(samples, num), hd_human_bytes(bytes, a), hd_human_bytes(total, b),
+           (long)(basis / 100), (long)(basis % 100));
+}
+
 static void print_counts(const struct hd_counts *c, int tree)
 {
     static const int tree_order[] = { ST_MISSING, ST_EXTRA, ST_SIZE, ST_TYPE, ST_ERR_SRC,
@@ -337,7 +391,7 @@ static int finish_tree_stage(const struct hd_counts *c, const char *abs_results,
 }
 
 static int finish_hash_stage(const struct hd_counts *c, const char *abs_results,
-                             const struct hd_buf *cmd, time_t started)
+                             const struct hd_buf *cmd, time_t started, int fast)
 {
     char a[HD_OFF_DEC_LEN + 8];
     off_t total = sides[0].hashes.bytes_read + sides[1].hashes.bytes_read;
@@ -358,6 +412,8 @@ static int finish_hash_stage(const struct hd_counts *c, const char *abs_results,
     } else {
         printf("elapsed: 0 s\n");
     }
+    if (fast)
+        print_fast_metrics();
     print_counts(c, 0);
     if (cmd->len > 0)
         printf("%s\n", cmd->data);
@@ -374,7 +430,7 @@ int main(int argc, char **argv)
     struct hd_opts o;
     struct os_stat sout, sres;
     struct hd_counts counts;
-    struct hd_buf cmd;
+    struct hd_buf cmd, mode;
     char **excluded = NULL;
     size_t nexcluded = 0, k;
     char *results, *abs_results;
@@ -394,6 +450,7 @@ int main(int argc, char **argv)
     if (sides[0].st.dev == sides[1].st.dev && sides[0].st.ino == sides[1].st.ino)
         hd_die("ORIGIN and DESTINATION are the same directory");
     stat_dir("output directory", o.output, &sout);
+    setup_hashopts(&o, &mode);
     results = hd_path_join(o.output, RESULTS_NAME);
     prepare_results(results, &o);
     stat_dir("results directory", results, &sres);
@@ -441,7 +498,7 @@ int main(int argc, char **argv)
         buf_init(&cmd);
         diff_hashes(results, abs_results, sides[0].abs_root, sides[1].abs_root, &counts,
                     &cmd);
-        status = finish_hash_stage(&counts, abs_results, &cmd, started);
+        status = finish_hash_stage(&counts, abs_results, &cmd, started, o.fast);
         buf_free(&cmd);
     }
 
@@ -452,6 +509,7 @@ int main(int argc, char **argv)
         free(sides[i].abs_root);
     free(abs_results);
     free(results);
+    buf_free(&mode);
     opts_free(&o);
     if (fflush(stdout) != 0)
         return 2;

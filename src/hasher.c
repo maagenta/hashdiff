@@ -9,14 +9,16 @@
 #include "hasher.h"
 #include "md5.h"
 #include "os.h"
+#include "plan.h"
 
 #define READ_BUFSIZE (1024 * 1024)
 
-void hasher_init(struct hd_hasher *h)
+void hasher_init(struct hd_hasher *h, const struct hd_hashopts *opts, struct hd_stats *st)
 {
+    h->opts = opts;
     h->bufsize = READ_BUFSIZE;
     h->buf = xmalloc(h->bufsize);
-    h->bytes_read = 0;
+    h->stats = st;
 }
 
 void hasher_free(struct hd_hasher *h)
@@ -33,23 +35,11 @@ static void set_error(struct hd_result *r, int err)
 }
 
 /* Full MD5 with a sequential read loop; the recorded size is the number of bytes read. */
-static void hash_full(struct hd_hasher *h, const char *path, struct hd_result *r)
+static void hash_full(struct hd_hasher *h, int fd, struct hd_result *r)
 {
     struct md5_ctx ctx;
-    struct os_stat st;
     off_t total = 0;
-    int fd = os_open_read(path);
 
-    if (fd < 0) {
-        set_error(r, errno);
-        return;
-    }
-    if (os_fstat(fd, &st) != 0 || st.kind != OS_REG) {
-        /* Replaced by something that is not a regular file since the traversal. */
-        set_error(r, st.kind != OS_REG ? EINVAL : errno);
-        os_close(fd);
-        return;
-    }
     os_advise_sequential(fd);
     md5_init(&ctx);
     for (;;) {
@@ -59,20 +49,129 @@ static void hash_full(struct hd_hasher *h, const char *path, struct hd_result *r
             if (errno == EINTR)
                 continue;
             set_error(r, errno);
-            os_close(fd);
             return;
         }
         if (n == 0)
             break;
         md5_update(&ctx, h->buf, (size_t)n);
         total += n;
-        h->bytes_read += n;
+        h->stats->bytes_read += n;
     }
-    os_close(fd);
     md5_final(&ctx, r->md5);
     r->type = RES_FULL;
     r->err = 0;
     r->size = total;
+}
+
+/*
+ * Reads len bytes at off in chunks of at most the buffer size, feeding them to ctx (or
+ * discarding them when ctx is NULL). Returns 0, or an errno; a file that ends early (it was
+ * truncated during the read) is reported as EIO.
+ */
+static int read_span(struct hd_hasher *h, int fd, off_t off, off_t len, struct md5_ctx *ctx)
+{
+    while (len > 0) {
+        size_t want = len < (off_t)h->bufsize ? (size_t)len : h->bufsize;
+        ssize_t n = os_pread(fd, h->buf, want, off);
+
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            return errno;
+        }
+        if (n == 0)
+            return EIO;
+        if (ctx != NULL)
+            md5_update(ctx, h->buf, (size_t)n);
+        off += n;
+        len -= n;
+        h->stats->bytes_read += n;
+    }
+    return 0;
+}
+
+/*
+ * Sampled hash: MD5(N as 8 little-endian bytes, then the B bytes of every sample in offset
+ * order). Samples closer than merge_gap are read through, discarding the bytes in between;
+ * the read order never changes the digest.
+ */
+static void hash_sampled(struct hd_hasher *h, int fd, const struct hd_plan *plan,
+                         struct hd_result *r)
+{
+    const struct hd_hashopts *o = h->opts;
+    struct hd_plan_iter it;
+    struct md5_ctx ctx;
+    unsigned char le[8];
+    off_t off, pos, start;
+    int i, err;
+
+    /* Hints: no readahead for the file, then every span that will be read. */
+    os_advise_random(fd);
+    plan_iter_init(&it, plan);
+    start = pos = -1;
+    while (plan_iter_next(&it, &off)) {
+        if (pos >= 0 && off - pos >= o->merge_gap) {
+            os_advise_willneed(fd, start, pos - start);
+            start = off;
+        }
+        if (start < 0)
+            start = off;
+        pos = off + plan->block;
+    }
+    os_advise_willneed(fd, start, pos - start);
+
+    for (i = 0; i < 8; i++)
+        le[i] = (unsigned char)((plan->n >> (8 * i)) & 0xFF);
+    md5_init(&ctx);
+    md5_update(&ctx, le, 8);
+    plan_iter_init(&it, plan);
+    pos = -1;
+    while (plan_iter_next(&it, &off)) {
+        err = 0;
+        if (pos >= 0 && off - pos < o->merge_gap)
+            err = read_span(h, fd, pos, off - pos, NULL);
+        if (err == 0)
+            err = read_span(h, fd, off, plan->block, &ctx);
+        if (err != 0) {
+            set_error(r, err);
+            return;
+        }
+        pos = off + plan->block;
+    }
+    md5_final(&ctx, r->md5);
+    r->type = RES_SAMPLED;
+    r->err = 0;
+    r->size = plan->n;
+    h->stats->samples += plan->k;
+    h->stats->sample_bytes += plan->k * plan->block;
+    h->stats->sampled_total += plan->n;
+}
+
+static void hash_regular(struct hd_hasher *h, const char *path, struct hd_result *r)
+{
+    struct os_stat st;
+    struct hd_plan plan;
+    int fd = os_open_read(path);
+
+    if (fd < 0) {
+        set_error(r, errno);
+        return;
+    }
+    if (os_fstat(fd, &st) != 0) {
+        set_error(r, errno);
+    } else if (st.kind != OS_REG) {
+        /* Replaced by something that is not a regular file since the traversal. */
+        set_error(r, EINVAL);
+    } else {
+        plan.sampled = 0;
+        if (h->opts->fast)
+            plan_make(st.size, h->opts->gap, h->opts->block, h->opts->seek_bytes, &plan);
+        if (plan.sampled)
+            hash_sampled(h, fd, &plan, r);
+        else
+            hash_full(h, fd, r);
+    }
+    os_close(fd);
 }
 
 /* MD5 of the link target returned by readlink; the size is the length of the target. */
@@ -112,7 +211,7 @@ void hash_entry(struct hd_hasher *h, const char *path, const struct hd_entry *e,
 {
     switch (e->type) {
     case ENT_FILE:
-        hash_full(h, path, r);
+        hash_regular(h, path, r);
         break;
     case ENT_LINK:
         hash_link(path, e, r);
@@ -180,7 +279,7 @@ static void count_result(struct hd_stats *st, const struct hd_result *r)
 }
 
 void hash_list(const char *root, const struct hd_list *l, const char *results,
-               const char *side, const char *abs_root, const char *mode_line,
+               const char *side, const char *abs_root, const struct hd_hashopts *opts,
                struct hd_stats *st)
 {
     struct hd_outfile out;
@@ -195,10 +294,10 @@ void hash_list(const char *root, const struct hd_list *l, const char *results,
     buf_append_str(&line, "# hashdiff-format: 2\n# root: ");
     hd_escape(&line, abs_root);
     buf_append_str(&line, "\n# mode: ");
-    buf_append_str(&line, mode_line);
+    buf_append_str(&line, opts->mode_line);
     buf_append_char(&line, '\n');
     outfile_write(&out, line.data, line.len);
-    hasher_init(&h);
+    hasher_init(&h, opts, st);
     for (i = 0; i < l->count; i++) {
         const struct hd_entry *e = &l->items[i];
         char *path = hd_path_join(root, e->path);
@@ -210,7 +309,6 @@ void hash_list(const char *root, const struct hd_list *l, const char *results,
         format_line(&line, e->path, &r);
         outfile_write(&out, line.data, line.len);
     }
-    st->bytes_read += h.bytes_read;
     st->ignored = l->ignored;
     hasher_free(&h);
     buf_free(&line);

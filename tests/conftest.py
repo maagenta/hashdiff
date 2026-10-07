@@ -247,3 +247,63 @@ def run_command_line(line):
 def skip_if_root():
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         pytest.skip("running as root: permissions are not enforced")
+
+
+OFF_MAX = 2 ** 63 - 1
+SEEK_BYTES = {"ssd": 200000, "hdd": 1440000}
+DEFAULT_BLOCK = {"ssd": 64 * 1024, "hdd": 1024 * 1024}
+
+
+def plan_oracle_k(n, gap, block, profile):
+    """Python reimplementation of the decision of the sampling plan (section 6.2).
+
+    Returns None for a full MD5, otherwise k. Unbounded integers: any value that would not fit
+    in a 64-bit off_t makes rule 3 choose a full read, like the C code.
+    """
+    sb = SEEK_BYTES[profile]
+    if n <= 2 * block:
+        return None
+    k = -(-(n - block) // (gap + block)) + 1
+    if k * block > OFF_MAX or k * block >= n:
+        return None
+    lhs, rhs = k * (sb + block), sb + n
+    if sb + block > OFF_MAX or lhs > OFF_MAX or rhs > OFF_MAX or lhs >= rhs:
+        return None
+    return k
+
+
+def plan_offsets(n, block, k):
+    """Offsets of k samples with the Bresenham accumulator of section 6.2."""
+    q, r = divmod(n - block, k - 1)
+    offsets, off, acc = [0], 0, 0
+    for _ in range(k - 1):
+        off += q
+        acc += r
+        if acc >= k - 1:
+            off += 1
+            acc -= k - 1
+        offsets.append(off)
+    return offsets
+
+
+def plan_oracle(n, gap, block, profile):
+    """None for a full MD5, otherwise the list of offsets."""
+    k = plan_oracle_k(n, gap, block, profile)
+    return None if k is None else plan_offsets(n, block, k)
+
+
+@pytest.fixture
+def testhook_plan(run_testhook):
+    """Runs "hashdiff-testhook plan" and returns None (full) or the list of offsets."""
+    def plan(n, gap, block, profile):
+        code, out, err = run_testhook("plan", n, gap, block, profile)
+        assert code == 0, err
+        lines = out.split(b"\n")[:-1]
+        if lines == [b"full"]:
+            return None
+        kind, k = lines[0].split(b" ")
+        assert kind == b"sampled"
+        offsets = [int(x) for x in lines[1:]]
+        assert len(offsets) == int(k)
+        return offsets
+    return plan

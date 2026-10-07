@@ -147,6 +147,26 @@ void os_advise_sequential(int fd)
 #endif
 }
 
+void os_advise_random(int fd)
+{
+#ifdef POSIX_FADV_RANDOM
+    (void)posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
+#else
+    (void)fd;
+#endif
+}
+
+void os_advise_willneed(int fd, off_t off, off_t len)
+{
+#ifdef POSIX_FADV_WILLNEED
+    (void)posix_fadvise(fd, off, len, POSIX_FADV_WILLNEED);
+#else
+    (void)fd;
+    (void)off;
+    (void)len;
+#endif
+}
+
 int os_mkdir(const char *path)
 {
     return mkdir(path, 0777);

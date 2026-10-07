@@ -40,7 +40,10 @@ ssize_t os_pread(int fd, void *buf, size_t n, off_t off);
 ssize_t os_write(int fd, const void *buf, size_t n);
 ssize_t os_readlink(const char *path, char *buf, size_t n);
 
+/* posix_fadvise hints where available (not on macOS); failures are ignored. */
 void os_advise_sequential(int fd);
+void os_advise_random(int fd);
+void os_advise_willneed(int fd, off_t off, off_t len);
 
 int os_mkdir(const char *path);
 int os_rename(const char *from, const char *to);

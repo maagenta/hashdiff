@@ -612,7 +612,8 @@ test_tree.py:
     --force or --resume → it starts over without asking; exit 0.
 
 test_fast_mode.py:
-10. --gap guarantee with `--fast -g 64K -b 4K --profile ssd` and a 2 MiB + 123 byte file:
+10. --gap guarantee with `--fast -g 256K -b 4K --profile ssd` and a 2 MiB + 123 byte file
+    (with -g 64K, rule 3 reads this file in full: 32 samples cost more than the file):
     a damaged region of G + 1 bytes swept across every position (4K step) is always
     detected; one damaged byte in the middle of a gap (offset computed from the testhook
     plan) is NOT detected; one byte within the last B bytes is detected.

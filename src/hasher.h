@@ -36,13 +36,24 @@ struct hd_stats {
 
 void stats_init(struct hd_stats *st);
 
-struct hd_hasher {
-    unsigned char *buf;         /* 1 MiB read buffer of this process */
-    size_t bufsize;
-    off_t bytes_read;
+/* Parameters of the hash stage, fixed for the whole run. */
+struct hd_hashopts {
+    int fast;
+    off_t gap;
+    off_t block;
+    off_t seek_bytes;
+    off_t merge_gap;
+    const char *mode_line;      /* value of the "# mode:" header */
 };
 
-void hasher_init(struct hd_hasher *h);
+struct hd_hasher {
+    const struct hd_hashopts *opts;
+    unsigned char *buf;         /* 1 MiB read buffer of this process */
+    size_t bufsize;
+    struct hd_stats *stats;
+};
+
+void hasher_init(struct hd_hasher *h, const struct hd_hashopts *opts, struct hd_stats *st);
 void hasher_free(struct hd_hasher *h);
 /* Hashes one entry of the list; path is the full path of the entry. */
 void hash_entry(struct hd_hasher *h, const char *path, const struct hd_entry *e,
@@ -50,7 +61,7 @@ void hash_entry(struct hd_hasher *h, const char *path, const struct hd_entry *e,
 
 /* Hashes a sorted list into DIR/hashes-SIDE.txt and fills the statistics. */
 void hash_list(const char *root, const struct hd_list *list, const char *results,
-               const char *side, const char *abs_root, const char *mode_line,
+               const char *side, const char *abs_root, const struct hd_hashopts *opts,
                struct hd_stats *st);
 
 #endif
