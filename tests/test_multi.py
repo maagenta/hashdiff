@@ -1,7 +1,7 @@
 """Tests 30 to 33: one origin against several destinations (section 2.2).
 
 Every destination is compared with ORIGIN and never with another destination, and with one
-destination every name and every label is the one of version 1.1.
+destination every name and every label is the one of version 1.0.
 """
 import os
 
@@ -52,7 +52,7 @@ def test_three_destinations_in_three_states(run_hashdiff, make_tree, tmp_path):
     assert b"destination-3 was not hashed" in err
 
 
-def test_one_destination_keeps_the_names_of_1_1(compare, make_tree):
+def test_one_destination_keeps_the_names_of_1_0(compare, make_tree):
     """Test 30: a single-destination run is unchanged."""
     origin = make_tree("origin", {"a": b"aa"})
     destination = make_tree("destination", {"a": b"XX"})

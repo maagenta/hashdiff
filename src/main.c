@@ -1160,8 +1160,10 @@ int main(int argc, char **argv)
     for (k = 0; k < nexcluded; k++)
         free(excluded[k]);
     free(excluded);
-    for (i = 0; i < nsides; i++)
+    for (i = 0; i < nsides; i++) {
         free(sides[i].parent);
+        set_free(&recheck_sets[i]);
+    }
     free(results);
     buf_free(&mode);
     opts_free(&o);

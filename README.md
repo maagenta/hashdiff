@@ -102,24 +102,25 @@ Examples:
 
 A run has two stages.
 
-**1. Tree stage.** Both trees are listed (names, types, sizes and modification times, no
-file content is read) into `tree-origin.txt` and `tree-destination.txt`, and compared:
+**1. Tree stage.** Every tree is listed (names, types, sizes and modification times, no file
+content is read) into `tree-origin.txt` and `tree-SIDE.txt`, and ORIGIN is compared with each
+destination:
 
-- If they differ (files missing in DESTINATION, files that exist only in DESTINATION,
-  different sizes or types, unreadable directories), hashdiff writes `tree-diff.txt`, prints
-  a suggested rsync command and **stops with exit code 4: nothing is hashed**. Fix the
-  differences yourself and run hashdiff again; since nothing was hashed, it starts over
-  without asking.
+- If a destination differs (files missing in it, files that exist only in it, different sizes
+  or types, unreadable directories), hashdiff writes its `tree-diff` file, prints a suggested
+  rsync command and **does not hash that destination**. Fix the differences yourself and run
+  hashdiff again; since nothing was hashed for it, the next run starts over without asking.
+  With a single destination that means nothing is hashed at all and the run exits 4.
 - The suggested command is `rsync -a 'ORIGIN/' 'DESTINATION/'`, or
   `rsync -a --delete-after ...` when DESTINATION has files that ORIGIN does not have.
   **`--delete-after` deletes those files.** Review `tree-diff.txt` before running it. The
   command excludes results.hashdiff and a nested tree, so they are never deleted.
 - Paths that could not be read are reported, and you are asked to fix their permissions.
 
-**2. Hash stage.** Only when both trees have exactly the same files, types and sizes, every
-file is hashed and the lists are compared. Files whose content differs are listed in
-`diff-files.txt` and `rsync-files.lst`, and hashdiff prints the command that copies exactly
-those files:
+**2. Hash stage.** A destination reaches it only when it has exactly the same files, types and
+sizes as ORIGIN; the others are reported and skipped. Every file is hashed and the lists are
+compared. Files whose content differs are listed in `diff-files.txt` and `rsync-files.lst`, and
+hashdiff prints the command that copies exactly those files:
 
     rsync -a -I --from0 --files-from='/abs/results.hashdiff/rsync-files.lst' '/abs/origin/' '/abs/destination/'
 

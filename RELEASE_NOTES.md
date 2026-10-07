@@ -5,10 +5,9 @@ goes into the `<!-- Write the summary of this release here -->` placeholder of
 `.github/release-notes.md` when the draft release for its tag is reviewed and published, so
 the two never say different things.
 
-Between the versions there are two lists of work that no code does yet, in decreasing order
-of certainty: **Specified**, whose design is closed and lives in `docs/implementation.md`, and
-**Backlog**, whose design is not. `docs/implementation.md` is the binding specification for
-everything in the first list.
+Below the versions, **Design notes** keeps the reasoning behind what shipped, and **Backlog**
+what has not been designed yet. For anything implemented, `docs/implementation.md` and the code
+are the truth; the notes are the record of what was decided and why.
 
 ## v1.1 (unreleased)
 
@@ -17,11 +16,63 @@ Until the tag exists, use the v1.0 release:
 
 ### Changes
 
-- Summary: when every hash matches, the last line is now
-  `no differences: ORIGIN and DESTINATION match` instead of
-  `differences: 0 HASH, 0 MISSING, 0 EXTRA, 0 SIZE, 0 TYPE, 0 ERR-SRC, 0 ERR-DST`. The
-  line appears exactly when hashdiff exits 0: a run that completed with unreadable files
-  has at least one ERR-SRC or ERR-DST, so it still prints the counts and exits 3.
+**The result files are not compatible with v1.0 and v1.0 cannot read these.** The hashes files
+are `# hashdiff-format: 3`, `diff-files.txt` has two more fields, and a v1.0 results directory
+is refused with a message that says so instead of being misread. Finish or discard a v1.0 run
+before upgrading.
+
+New:
+
+- **Several destinations.** `hashdiff ORIGIN DEST1 DEST2 ...` compares 1 to 64 copies of
+  ORIGIN in one run. Each is compared with ORIGIN and never with another, and ORIGIN is
+  traversed and hashed once for all of them, so one more destination costs one more read of
+  that destination only. Each gets its own result files, its own summary line and its own rsync
+  command, and a destination whose tree differs no longer stops the others: it is reported and
+  skipped while the rest are hashed. `--number-of-destinations N` fails before anything is read
+  when the count is not N, for scripts where a mistyped path would otherwise become one more
+  destination in silence. With one destination every file name and every line of the summary is
+  what it was, so nothing changes for the common case.
+- **`--file`** compares regular files instead of directories: one disk image verified against
+  its copies. The files may have different names, so they are compared by position; the command
+  names both files and no `rsync-files.lst` is written, because a list holding ORIGIN's name
+  would copy it into the destination's directory.
+- **`--recheck`** archives a finished run that found differences into
+  `results.hashdiff/scan-YYYYMMDDHHMM/` and reads only the paths that differed, which is what
+  you want after running the rsync command. Exit 0 then means those paths match now, not that
+  the trees match, and the summary says so.
+- **One run at a time.** Every run takes an advisory lock on `results.hashdiff/lock`, so two
+  runs can no longer append to the same journal and leave a file that a later `--resume` would
+  trust. The kernel releases it on every exit path, so nothing stale is left behind.
+  `--ignore-lock` is the way past it.
+- **`paths.txt`** records the roots of the run and **`history.txt`** keeps one block per run for
+  the life of the directory, oldest first; it is the one file nothing ever deletes, so it says
+  what the directory has been used for.
+- The result files now record when they were written: `# started:`, one `# resumed:` per resume
+  and `# finished:` in the hashes files, and a footer in `diff-files.txt` repeating that
+  destination's summary. Two runs over the same trees still produce the same files once those
+  lines are removed.
+- `diff-files.txt` carries the two hashes of every differing path, before the path, so finding
+  out how two files differ no longer means grepping both hashes files by hand.
+
+Changed:
+
+- **Paths are cleaned** before anything else: a relative path is taken from the current
+  directory and `.`, `..` and repeated slashes are removed. The default `--output .` used to
+  reach the summary as `/dir/./results.hashdiff`, and a run started as `./o` and resumed as `o`
+  used to be refused with "belongs to another root", losing everything it had hashed. Any
+  spelling of the same directories is now one run.
+- **An existing `results.hashdiff` is read, not just noticed.** hashdiff says whether the
+  previous run was interrupted, finished clean or finished with differences that were never
+  copied, and each question offers only what that state allows; `--resume` over a finished run
+  is now an error instead of re-hashing its last file. A previous run over other directories is
+  never a question: it stops and names the role that changed.
+- **Exit codes have a documented precedence**, 2 > 4 > 3 > 1 > 0, because a run can now end
+  with its destinations in different states. With one destination nothing changes.
+- The summary: `no differences: ORIGIN and DESTINATION match` when every hash matches, which
+  appears exactly when hashdiff exits 0; the rsync command is followed by a NOTE saying what it
+  copies and where the copy of it is; counts next to a noun use the singular at 1, verb
+  included; and `elapsed:` always carries a rate field, `-` under a second, so the line has one
+  shape.
 - CI: a `linux-arm64` job (`ubuntu-24.04-arm`, gcc) runs the suite on aarch64. The release
   workflow already built the `linux-arm64` archive; now that target is tested too.
 
@@ -36,21 +87,13 @@ Until the tag exists, use the v1.0 release:
 3. Push the tag, let the workflow build the five archives and `SHA256SUMS`, review the
    draft and publish it with `gh release edit vX.Y --draft=false`.
 
-## Specified (using docs/implementation.md)
+## Design notes
 
-Designed, not written: every item below is in `docs/implementation.md`, with its tests in
-section 11 and its phase in section 12, and each one says which section holds it.
-**For these, the specification is what counts**; this list is kept for the intent behind each
-item and for the record of what was decided. The **Decide** points were resolved in the spec
-with the recommendation written under each one, so that is the place to argue with any of them.
-Phases 9 to 16 cover the lot, and no line of code exists for any of it yet.
-
-Scope is open: items 1 to 3 and 9 are small and self-contained and would fit in v1.1, items 4
-to 6 change the on-disk formats and have to land together with one format bump, and 7 and 8
-are the two features. Item 7 renames every per-destination file, so anything that touches those
-names is cheaper after it: consider doing it first even though it is the largest. Item 10
-depends on nothing and could land anywhere, but the lock it describes is what keeps two runs
-from corrupting one directory, which argues for having it early.
+All ten items below shipped in v1.1, as phases 9 to 15 of section 12 of
+`docs/implementation.md`. **The specification and the code are the truth now**; these notes are
+kept for the intent behind each item, for the obstacles that were found before writing any of
+it, and for the record of what every **Decide** was resolved to. Each one says which section of
+the specification holds it.
 
 ### 1. Relative paths in ORIGIN, DESTINATION and --output
 
@@ -159,7 +202,7 @@ Three things have to be settled first, because the shape asked for breaks the to
   `unknown header line` on any `#` header it does not know, and hits `malformed line` on a
   `#` line that comes after the records. Keep `# hashdiff-format:`, `# root:` and `# mode:`
   as the first three lines, make the readers skip every leading `#` line and accept
-  trailing ones, and raise `# hashdiff-format: 2` to `3` so a directory written by 1.1 is
+  trailing ones, and raise `# hashdiff-format: 2` to `3` so a directory written by 1.0 is
   rejected with a clear message instead of being misparsed. The literal
   `"# hashdiff-format: 2"` appears in `src/diff.c` twice.
 - **A timestamp breaks the byte-for-byte guarantee.** Section 7 requires the result files

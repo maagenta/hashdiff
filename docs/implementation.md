@@ -129,7 +129,7 @@ other.
       1               origin, destination
       2 or more       origin, destination-1, destination-2, ... in command-line order
 
-  With one destination every name is the one version 1.1 used, so a single-destination run
+  With one destination every name is the one version 1.0 used, so a single-destination run
   writes exactly the files it wrote before.
 - ORIGIN and every destination must be directories (regular files with --file, section 2.3);
   a symlink is followed only for the roots themselves. Every two roots must be different
@@ -306,7 +306,7 @@ single entry of section 2.3, but the file is written and compared in the same wa
     `rsync -a EXCLUDES '<ORIGIN abs>/' '<DESTINATION abs>/'`
   - only ERR-SRC / ERR-DST: no command.
 
-  With one destination the lines on stdout are the ones of version 1.1:
+  With one destination the lines on stdout are the ones of version 1.0:
 
       tree differences: 1 MISSING, 0 EXTRA, 0 SIZE, 0 TYPE, 0 ERR-SRC, 0 ERR-DST
       suggested command (review it first):
@@ -330,7 +330,7 @@ single entry of section 2.3, but the file is written and compared in the same wa
   ORIGIN. In the pattern, `*`, `?`, `[` and `\` are escaped with `\`. Everything is quoted
   with POSIX quoting (`'` → `'\''`).
 
-  On stderr, with one destination, exactly the messages of version 1.1:
+  On stderr, with one destination, exactly the messages of version 1.0:
 
       hashdiff: ORIGIN and DESTINATION trees differ; nothing was hashed. See tree-diff.txt,
       fix the differences (for example with the suggested rsync command) and run hashdiff
@@ -548,7 +548,7 @@ any side changed, the parent tells every child to exit, builds `tree-changes.txt
 
 A changed tree stops the whole resumed run, not only that side: a resume is the continuation
 of one run, and restoring the tree or --force are the two ways out. With one destination the
-names are `# destination:` and `## destination`, as in version 1.1. The parent then
+names are `# destination:` and `## destination`, as in version 1.0. The parent then
 deletes the `.part` files, prints on stderr
 
     hashdiff: the trees changed since the interrupted run; see tree-changes.txt.
@@ -880,7 +880,7 @@ Read execution (does not change the hash):
   after the last record: the diff (section 9), the resume (section 3.4) and the test helpers.
   A reader that rejects an unknown `#` header, or that counts header lines instead of testing
   them, breaks on the lines above. `# hashdiff-format:` is 3 and not 2 for that reason: a
-  results directory written by version 1.1 is refused with a clear message instead of being
+  results directory written by version 1.0 is refused with a clear message instead of being
   misread.
 - Fields separated by a single space: type, hash (32 lowercase hex; for E, the errno in
   decimal), size (decimal; for L, length of the link target; for E, `-`) and path.
@@ -983,7 +983,7 @@ writing its own three files (section 3).
          NOTE: the commands above copy with rsync only the files whose content did not match.
                There is a copy of each one in its results.hashdiff/rsync-command-destination-N.txt
 
-  With one destination every label is the one of version 1.1: `destination:` in 3 and 4,
+  With one destination every label is the one of version 1.0: `destination:` in 3 and 4,
   `differences:` or `no differences: ORIGIN and DESTINATION match` or `tree differences:` in
   7, the command alone with no `command for` line in 8, and in 9
 
@@ -1212,7 +1212,7 @@ test_multi.py:
     order and name every destination; the destination whose tree differs has no hashes file
     while the other two do; hashes-origin.txt is written once and its entries are read once.
     The same trees with one destination give exactly the file names and the summary labels of
-    version 1.1.
+    version 1.0.
 31. Identical result files with -j 1, -j 4 and --serial over three destinations.
 32. Rejections and warnings: a destination equal to ORIGIN, two equal destinations, 65
     destinations and `--number-of-destinations 2` with three destinations → exit 2 each, the
@@ -1302,8 +1302,9 @@ earlier only if marked xfail with a reason.
    how to run the tests (make test-deps, make test, HASHDIFF_SLOW_TESTS=1) and the CI
    badge. Test 16.
 
-Phases 1 to 8 are version 1.1. Phases 9 to 16 are the work of sections 2.1, 2.2, 2.3, 3.2,
-3.3, 3.5, 3.6 and the parts of 3, 3.1, 7, 8 and 9 that depend on them. Their order is not the
+Phases 1 to 8 are version 1.0. Phases 9 to 16 are the rest of version 1.1: the work of
+sections 2.1, 2.2, 2.3, 3.2, 3.3, 3.5, 3.6 and the parts of 3, 3.1, 7, 8 and 9 that depend on
+them. Their order is not the
 order in which they were asked for: phase 10 renames every per-destination file and is what
 makes a side name the key of every output, so doing it before the formats and the prompts
 writes them once instead of twice.
@@ -1336,10 +1337,11 @@ Phases 13, 14 and 15 depend on nothing in each other and may land in any order.
     directory, the `F_GETLK` message with the holder's pid, --ignore-lock, and the warning
     that lets a filesystem without locking through. Test 39. README: that one run at a time
     writes a results.hashdiff, what the flag does, and the two things the lock does not see.
-16. README and RELEASE_NOTES.md sweep. The on-disk formats of this work do not read on version
-    1.1 and 1.1 does not read theirs, so the release that carries it is 1.2: bump `HD_VERSION`
-    in src/config.h, the `--version` line of section 2 and `test_version` in
-    tests/test_cli.py together, as the checklist in RELEASE_NOTES.md says.
+16. README and RELEASE_NOTES.md sweep. The version does not move: 1.1 was never released, so
+    everything from phase 9 on ships in it and the break in the on-disk formats is from 1.0 to
+    1.1, which the Changes list of RELEASE_NOTES.md has to say. The three places that carry the
+    number already agree (the checklist in RELEASE_NOTES.md lists them); they only move when 1.1
+    is published and the next version starts.
 
 ## 13. Continuous integration (GitHub Actions)
 
