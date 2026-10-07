@@ -29,6 +29,7 @@ struct hd_role {
 struct hd_runstate {
     int state;
     char started[HD_TIME_LEN];          /* "# started:" of the previous run */
+    char recheck[64];                   /* "# recheck:" of paths.txt, or empty */
     int tree_differed;                  /* destinations that stopped in the tree stage */
 };
 
@@ -42,11 +43,28 @@ int runstate_inspect(const char *results, const char *output, const struct hd_ro
                      int nroles, int file_mode, struct hd_runstate *out);
 
 /*
+ * Section 3.5: moves every file runstate_clean would remove into a new
+ * results.hashdiff/scan-YYYYMMDDHHMM/, named after the previous run's start time, with a "-2",
+ * "-3", ... suffix when that name is taken. history.txt and lock stay where they are. Returns
+ * the archive's name (malloc'd).
+ */
+char *runstate_archive(const char *results, const char *started);
+
+/*
+ * Reads the diff-files files of an archive and fills the recheck sets: sets[i] for destination
+ * i, and sets[0] with the union, because ORIGIN is hashed once for all of them. A diff file
+ * made with other parameters is a fatal error. Returns the size of the union.
+ */
+unsigned long runstate_recheck_sets(const char *results, const char *archive,
+                                    const struct hd_role *roles, int nroles,
+                                    const char *mode_line, struct hd_set *sets);
+
+/*
  * Writes paths.txt and appends the same block to history.txt, which records one block per run
  * for the life of the directory and is the one file nothing ever removes (section 3.2).
  */
 void runstate_write_paths(const char *results, const char *started, int file_mode,
-                          const struct hd_role *roles, int nroles);
+                          const struct hd_role *roles, int nroles, const char *recheck);
 
 /* 1 when the directory holds a published hashes file or a journal, so there may be something
  * to resume (section 3.3). */

@@ -10,7 +10,7 @@
 #include "util.h"
 
 enum opt_id {
-    OPT_OUTPUT, OPT_FILE, OPT_RESUME, OPT_FORCE, OPT_FAST, OPT_GAP, OPT_BLOCK, OPT_PROFILE, OPT_JOBS,
+    OPT_OUTPUT, OPT_FILE, OPT_RESUME, OPT_FORCE, OPT_RECHECK, OPT_FAST, OPT_GAP, OPT_BLOCK, OPT_PROFILE, OPT_JOBS,
     OPT_SERIAL, OPT_ONE_FS, OPT_NDEST, OPT_IGNORE_LOCK, OPT_QUIET, OPT_HELP, OPT_VERSION
 };
 
@@ -26,6 +26,7 @@ static const struct optdef optdefs[] = {
     { 0, "file", 0, OPT_FILE },
     { 0, "resume", 0, OPT_RESUME },
     { 0, "force", 0, OPT_FORCE },
+    { 0, "recheck", 0, OPT_RECHECK },
     { 'f', "fast", 0, OPT_FAST },
     { 'g', "gap", 1, OPT_GAP },
     { 'b', "block", 1, OPT_BLOCK },
@@ -57,6 +58,8 @@ static const char *const help_lines[] = {
     "                          without asking",
     "      --force             If results.hashdiff exists, discard it and start over",
     "                          without asking",
+    "      --recheck           If results.hashdiff holds a finished run with differences,",
+    "                          archive it and read only the paths that differed",
     "  -f, --fast              Sampled fast mode. Without it: full MD5 of everything",
     "  -g, --gap SIZE          Maximum unread region between two samples (default: 64M).",
     "                          Any contiguous damage larger than SIZE is always detected",
@@ -173,6 +176,9 @@ static int apply(const struct optdef *d, const char *val, struct hd_opts *o, str
         break;
     case OPT_FORCE:
         o->force = 1;
+        break;
+    case OPT_RECHECK:
+        o->recheck = 1;
         break;
     case OPT_FAST:
         o->fast = 1;
@@ -377,8 +383,8 @@ static int parse_args(int argc, char **argv, struct hd_opts *o)
         usage_error("--output must not be empty", NULL);
         return OPTS_ERROR;
     }
-    if (o->resume && o->force) {
-        usage_error("--resume and --force cannot be used together", NULL);
+    if (o->resume + o->force + o->recheck > 1) {
+        usage_error("--resume, --force and --recheck exclude each other", NULL);
         return OPTS_ERROR;
     }
     if (o->file_mode) {
@@ -422,6 +428,7 @@ int opts_parse(int argc, char **argv, struct hd_opts *o)
     o->file_mode = 0;
     o->resume = 0;
     o->force = 0;
+    o->recheck = 0;
     o->ignore_lock = 0;
     o->fast = 0;
     o->gap = (off_t)64 * 1024 * 1024;

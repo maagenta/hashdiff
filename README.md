@@ -43,6 +43,7 @@ Options may appear before, between or after the paths.
     -x, --one-file-system   Do not cross mount points
         --number-of-destinations N
                             Fail unless exactly N destinations were given
+        --recheck           Archive a finished run and read only the paths that differed
         --file              ORIGIN and the destinations are files, not directories
         --ignore-lock       Do not refuse when another run holds the lock
     -q, --quiet             No progress on stderr
@@ -140,6 +141,7 @@ and so on); the names below are the ones of a run with a single destination.
 | `paths.txt` | tree | the cleaned root of every side of this run |
 | `history.txt` | tree | one block per run ever made in this directory, oldest first |
 | `lock` | start | empty; the advisory lock that keeps two runs apart |
+| `scan-YYYYMMDDHHMM/` | recheck | the files of the run that `--recheck` archived |
 | `tree-origin.txt`, `tree-destination.txt` | tree | `TYPE SIZE MTIME PATH` per file and symlink |
 | `tree-diff.txt` | tree | ORIGIN vs DESTINATION, in an `## origin` and a `## destination` section |
 | `hashes-origin.txt`, `hashes-destination.txt` | hash | `TYPE HASH SIZE PATH` per file and symlink |
@@ -229,6 +231,20 @@ finished; a diff file with a record means it found differences that were never c
 
 In a script, with no terminal, every one of those stops with an error that names the flags that
 state accepts.
+
+**Rechecking what you copied.** After a run with differences you normally run the rsync
+command it printed, and then you only want to know whether that worked. `--recheck` answers
+exactly that: it moves the files of the previous run into `results.hashdiff/scan-YYYYMMDDHHMM/`,
+named after when that run started, and reads only the paths that differed, each destination
+only its own. On a terminal it is the `[c]heck those paths again` answer.
+
+It is not a comparison of the trees. Nothing else is read, so a file that became different
+anywhere else is not seen, and a file missing elsewhere cannot be found: **exit 0 after a
+recheck means that those paths match now, not that the trees match.** The summary says so on
+its second line. A rechecked path that is gone from every tree is reported as a count and is
+not a difference, since it was one between two trees and neither holds it now. A recheck whose
+`--fast` parameters differ from the archived run is refused, because those hashes are not
+comparable. The archives are never pruned, and `--force` keeps them.
 
 **One run at a time.** Two hashdiff runs writing one `results.hashdiff` would append to the
 same journal and leave a file that is not a valid prefix of anything, which a later `--resume`

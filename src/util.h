@@ -69,6 +69,24 @@ const char *hd_plural(unsigned long n);
 char *hd_time_text(long t, char *buf);
 /* Local time as "YYYYMMDDHHMM", which sorts (the archive names of section 3.5). */
 char *hd_time_stamp(long t, char *buf);
+/* "202612161230" back to "16/12/2026 12:30", for the archive names of section 3.5. A trailing
+ * "-2" is ignored. Returns buf, or NULL when the stamp is not one. */
+char *hd_time_from_stamp(const char *stamp, char *buf);
+
+/* A set of paths, sorted with strcmp; membership by binary search (section 3.5). */
+struct hd_set {
+    char **items;
+    size_t count;
+    size_t cap;
+};
+
+void set_init(struct hd_set *s);
+void set_free(struct hd_set *s);
+void set_add(struct hd_set *s, const char *path);       /* copies path */
+void set_sort(struct hd_set *s);                        /* sorts and drops duplicates */
+int set_has(const struct hd_set *s, const char *path);
+/* The index of path, or s->count when it is not there. */
+size_t set_find(const struct hd_set *s, const char *path);
 
 /* Path escaping of the output files: '\' -> "\\", LF -> "\n", CR -> "\r". */
 void hd_escape(struct hd_buf *out, const char *s);

@@ -53,6 +53,9 @@ void walk_tree(const char *root, const struct walk_opts *wo, struct hd_list *lis
  * stat'd and not lstat'd, because the path given on the command line is followed. */
 void walk_file(const char *root, const char *name, struct hd_list *list);
 void list_sort(struct hd_list *list);
+/* Section 3.5: drops every entry whose path is not in keep. The traversal itself is never
+ * shortened, so a path that disappeared is still seen before this. */
+void list_filter(struct hd_list *list, const struct hd_set *keep);
 void list_free(struct hd_list *list);
 
 /* Writes DIR/tree-SIDE.txt (section 3.1 of the specification) from a sorted list. */

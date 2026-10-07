@@ -282,7 +282,8 @@ static void merge_positional(struct stream *o, struct stream *d, merge_fn fn, vo
     }
 }
 
-static void merge(struct stream *o, struct stream *d, merge_fn fn, void *ctx, int positional)
+static void merge(struct stream *o, struct stream *d, merge_fn fn, void *ctx, int positional,
+                  const struct hd_set *only)
 {
     if (positional) {
         merge_positional(o, d, fn, ctx);
@@ -291,19 +292,22 @@ static void merge(struct stream *o, struct stream *d, merge_fn fn, void *ctx, in
     /* A caught signal stops the merge; the caller discards its outputs. */
     while ((o->has || d->has) && !os_caught_signal()) {
         int c = !o->has ? 1 : !d->has ? -1 : strcmp(o->cur.path.data, d->cur.path.data);
-        int st;
+        const char *at = c <= 0 ? o->cur.path.data : d->cur.path.data;
+        int st, skip = only != NULL && !set_has(only, at);
 
         if (c < 0) {
             st = classify(&o->cur, NULL);
-            fn(ctx, st, o->cur.path.data, &o->cur, NULL);
+            if (!skip)
+                fn(ctx, st, o->cur.path.data, &o->cur, NULL);
             stream_next(o);
         } else if (c > 0) {
             st = classify(NULL, &d->cur);
-            fn(ctx, st, d->cur.path.data, NULL, &d->cur);
+            if (!skip)
+                fn(ctx, st, d->cur.path.data, NULL, &d->cur);
             stream_next(d);
         } else {
             st = classify(&o->cur, &d->cur);
-            if (st >= 0)
+            if (st >= 0 && !skip)
                 fn(ctx, st, o->cur.path.data, &o->cur, &d->cur);
             stream_next(o);
             stream_next(d);
@@ -390,7 +394,7 @@ void diff_trees(const char *results, const struct hd_names *n, const char *abs_o
         outfile_write(&out, i == 0 ? "## origin\n" : "## destination\n",
                       i == 0 ? 10 : 15);
         pass.destination = i;
-        merge(&o, &d, tree_pass_fn, &pass, n->file_mode);
+        merge(&o, &d, tree_pass_fn, &pass, n->file_mode, n->only);
         stream_close(&o);
         stream_close(&d);
         if (os_caught_signal())
@@ -538,6 +542,37 @@ unsigned long report_counts(const char *results, const char *name, struct hd_cou
     return counts_total(c);
 }
 
+unsigned long recheck_gone(const char *results, const char *const *trees,
+                           const char *const *roots, int n, const struct hd_set *set)
+{
+    char *seen;
+    size_t i, gone = 0;
+    int k;
+
+    if (set->count == 0)
+        return 0;
+    seen = xmalloc(set->count);
+    memset(seen, 0, set->count);
+    for (k = 0; k < n; k++) {
+        struct stream t;
+
+        stream_open(&t, results, trees[k], FMT_TREE, roots[k]);
+        while (t.has) {
+            size_t at = set_find(set, t.cur.path.data);
+
+            if (at != set->count)
+                seen[at] = 1;
+            stream_next(&t);
+        }
+        stream_close(&t);
+    }
+    for (i = 0; i < set->count; i++)
+        if (!seen[i])
+            gone++;
+    free(seen);
+    return (unsigned long)gone;
+}
+
 void tree_excluded(const char *results, const char *name, const char *abs_root,
                    char ***excluded, size_t *nexcluded)
 {
@@ -585,7 +620,7 @@ int diff_hashes(const char *results, const struct hd_names *n, const char *abs_o
     pass.list = n->file_mode ? NULL : &list;
     pass.c = c;
     buf_init(&pass.line);
-    merge(&o, &d, hash_pass_fn, &pass, n->file_mode);
+    merge(&o, &d, hash_pass_fn, &pass, n->file_mode, n->only);
     buf_free(&pass.line);
     stream_close(&o);
     stream_close(&d);

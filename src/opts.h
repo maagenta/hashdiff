@@ -19,6 +19,7 @@ struct hd_opts {
     int file_mode;       /* --file: the paths are regular files (section 2.3) */
     int resume;
     int force;
+    int recheck;         /* --recheck: read only the paths that differed (section 3.5) */
     int ignore_lock;
     int fast;
     off_t gap;

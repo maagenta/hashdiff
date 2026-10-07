@@ -292,6 +292,101 @@ char *hd_time_stamp(long t, char *buf)
     return format_time(t, "%Y%m%d%H%M", buf);
 }
 
+char *hd_time_from_stamp(const char *stamp, char *buf)
+{
+    size_t i;
+
+    for (i = 0; i < 12; i++)
+        if (stamp[i] < '0' || stamp[i] > '9')
+            return NULL;
+    /* dd/mm/yyyy HH:MM out of YYYYMMDDHHMM. */
+    buf[0] = stamp[6];
+    buf[1] = stamp[7];
+    buf[2] = '/';
+    buf[3] = stamp[4];
+    buf[4] = stamp[5];
+    buf[5] = '/';
+    memcpy(buf + 6, stamp, 4);
+    buf[10] = ' ';
+    buf[11] = stamp[8];
+    buf[12] = stamp[9];
+    buf[13] = ':';
+    buf[14] = stamp[10];
+    buf[15] = stamp[11];
+    buf[16] = '\0';
+    return buf;
+}
+
+void set_init(struct hd_set *s)
+{
+    s->items = NULL;
+    s->count = 0;
+    s->cap = 0;
+}
+
+void set_free(struct hd_set *s)
+{
+    size_t i;
+
+    for (i = 0; i < s->count; i++)
+        free(s->items[i]);
+    free(s->items);
+    set_init(s);
+}
+
+void set_add(struct hd_set *s, const char *path)
+{
+    if (s->count == s->cap) {
+        s->cap = s->cap ? s->cap * 2 : 64;
+        s->items = xrealloc(s->items, s->cap * sizeof(*s->items));
+    }
+    s->items[s->count++] = xstrdup(path);
+}
+
+static int cmp_item(const void *a, const void *b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+void set_sort(struct hd_set *s)
+{
+    size_t i, n = 0;
+
+    if (s->count == 0)
+        return;
+    qsort(s->items, s->count, sizeof(*s->items), cmp_item);
+    for (i = 1; i < s->count; i++) {
+        if (strcmp(s->items[n], s->items[i]) == 0)
+            free(s->items[i]);
+        else
+            s->items[++n] = s->items[i];
+    }
+    s->count = n + 1;
+}
+
+size_t set_find(const struct hd_set *s, const char *path)
+{
+    size_t lo = 0, hi = s->count;
+
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int c = strcmp(s->items[mid], path);
+
+        if (c == 0)
+            return mid;
+        if (c < 0)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return s->count;
+}
+
+int set_has(const struct hd_set *s, const char *path)
+{
+    return set_find(s, path) != s->count;
+}
+
 void hd_escape(struct hd_buf *out, const char *s)
 {
     for (; *s != '\0'; s++) {

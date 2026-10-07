@@ -171,6 +171,16 @@ static int cmp_entry_path(const void *a, const void *b)
 }
 
 /* Canonical order: strcmp on the raw bytes (strcmp compares as unsigned char). */
+void list_filter(struct hd_list *l, const struct hd_set *keep)
+{
+    size_t i, n = 0;
+
+    for (i = 0; i < l->count; i++)
+        if (set_has(keep, l->items[i].path))
+            l->items[n++] = l->items[i];
+    l->count = n;
+}
+
 void walk_file(const char *root, const char *name, struct hd_list *list)
 {
     struct hd_entry *e;

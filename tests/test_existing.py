@@ -84,6 +84,7 @@ def test_state_3_says_the_differences_were_never_copied(run_hashdiff, make_tree,
     code, out, term = d.pty(b"a\n", hashdiff_bin)
     assert code == 2, term
     assert b"differences were never copied (see rsync-command.txt)" in term
+    assert b"[c]heck those paths again, [o]verwrite or [a]bort?" in term
     assert b"[r]esume" not in term
 
     code, out, term = d.pty(b"overwrite\n", hashdiff_bin)
@@ -95,7 +96,8 @@ def test_without_a_terminal_each_state_names_its_flags(run_hashdiff, make_tree, 
 
     code, out, err = d.run()
     assert code == 2
-    assert b"holds a finished run; use --force to start over" in err
+    # It found differences, so --recheck is offered too (sections 3.3 and 3.5).
+    assert b"differences were never copied; use --recheck" in err and b"--force" in err
     assert b"--resume" not in err
 
     code, out, err = d.run("--resume")

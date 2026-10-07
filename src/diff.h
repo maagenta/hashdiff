@@ -58,6 +58,9 @@ struct hd_names {
     int file_mode;
     const char *origin_path;
     const char *dest_path;
+    /* --recheck (section 3.5): both comparisons of a destination see only its own paths. A
+     * path rechecked for one destination and not for another would otherwise be MISSING. */
+    const struct hd_set *only;
 };
 
 /* Counts the records of a tree-diff or diff-files file per status, 0 if it does not exist,
@@ -97,6 +100,11 @@ int diff_hashes(const char *results, const struct hd_names *n, const char *abs_o
 
 /* Writes the footer of section 9 and publishes the diff-files file. */
 void diff_commit(struct hd_outfile *diff, const char *footer, size_t len);
+
+/* Section 3.5: how many paths of a recheck set no tree holds any more. trees[i] and roots[i]
+ * are the tree file and the root of every side of the run. */
+unsigned long recheck_gone(const char *results, const char *const *trees,
+                           const char *const *roots, int n, const struct hd_set *set);
 
 /* Parses 32 lowercase hex digits into a digest. */
 void hex_to_md5(const char *hex, unsigned char md5[16]);

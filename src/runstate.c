@@ -97,7 +97,7 @@ int runstate_has_hashes(const char *results)
 }
 
 void runstate_write_paths(const char *results, const char *started, int file_mode,
-                          const struct hd_role *roles, int nroles)
+                          const struct hd_role *roles, int nroles, const char *recheck)
 {
     static const char *const paths_magic = "# hashdiff-paths: 1\n";
     static const char *const history_magic = "# hashdiff-history: 1\n";
@@ -114,6 +114,12 @@ void runstate_write_paths(const char *results, const char *started, int file_mod
     buf_append_char(&b, '\n');
     if (file_mode)
         buf_append_str(&b, "# file: 1\n");
+    if (recheck != NULL) {
+        /* What makes an interrupted recheck resumable: the archive the sets came from (3.5). */
+        buf_append_str(&b, "# recheck: ");
+        buf_append_str(&b, recheck);
+        buf_append_char(&b, '\n');
+    }
     for (i = 0; i < nroles; i++) {
         buf_append_str(&b, roles[i].name);
         buf_append_char(&b, ' ');
@@ -186,6 +192,9 @@ static void check_paths(const char *results, const char *output,
                 out->started[HD_TIME_LEN - 1] = '\0';
             } else if (strcmp(rd.line.data, "# file: 1") == 0) {
                 was_file = 1;
+            } else if (strncmp(rd.line.data, "# recheck: ", 11) == 0) {
+                strncpy(out->recheck, rd.line.data + 11, sizeof(out->recheck) - 1);
+                out->recheck[sizeof(out->recheck) - 1] = '\0';
             }
             continue;
         }
@@ -224,6 +233,7 @@ int runstate_inspect(const char *results, const char *output, const struct hd_ro
 
     out->state = RUNSTATE_FRESH;
     out->started[0] = '\0';
+    out->recheck[0] = '\0';
     out->tree_differed = 0;
     if (!runstate_has_hashes(results))
         return RUNSTATE_FRESH;
@@ -257,4 +267,126 @@ int runstate_inspect(const char *results, const char *output, const struct hd_ro
     out->state = interrupted ? RUNSTATE_INTERRUPTED
                  : differences ? RUNSTATE_FINISHED_DIFF : RUNSTATE_FINISHED_CLEAN;
     return out->state;
+}
+
+/* ---- the archive and the recheck sets (section 3.5) ---- */
+
+char *runstate_archive(const char *results, const char *started)
+{
+    struct os_dirent *entries;
+    size_t count, i, k = 0;
+    char digits[16], base[32], name[48], *dir;
+    int n = 1;
+
+    /*
+     * The previous run's start time, so the archive identifies the scan it holds. It arrives as
+     * dd/mm/yyyy HH:MM, and the name has to sort, so it is written YYYYMMDDHHMM.
+     */
+    for (i = 0; started[i] != '\0' && k < 12; i++)
+        if (started[i] >= '0' && started[i] <= '9')
+            digits[k++] = started[i];
+    if (k == 12)
+        sprintf(base, "scan-%.4s%.2s%.2s%.4s", digits + 4, digits + 2, digits, digits + 8);
+    else
+        strcpy(base, "scan-unknown");
+    strcpy(name, base);
+    for (;;) {
+        dir = hd_path_join(results, name);
+        if (os_mkdir(dir) == 0)
+            break;
+        if (errno != EEXIST)
+            hd_die("cannot create '%s': %s", dir, strerror(errno));
+        free(dir);
+        if (++n > 99)
+            hd_die("cannot create an archive in '%s': too many with the same stamp", results);
+        sprintf(name, "%s-%d", base, n);
+    }
+
+    list_results(results, &entries, &count);
+    for (i = 0; i < count; i++) {
+        struct os_stat st;
+        char *from, *to;
+
+        /* Only what the cleaning would remove: history.txt, lock and the other archives stay. */
+        if (!is_result_file(entries[i].name))
+            continue;
+        from = hd_path_join(results, entries[i].name);
+        to = hd_path_join(dir, entries[i].name);
+        if (os_lstat(from, &st) == 0 && st.kind == OS_REG && os_rename(from, to) != 0)
+            hd_die("cannot move '%s' to '%s': %s", from, to, strerror(errno));
+        free(from);
+        free(to);
+    }
+    os_free_dir(entries, count);
+    free(dir);
+    return xstrdup(name);
+}
+
+unsigned long runstate_recheck_sets(const char *results, const char *archive,
+                                    const struct hd_role *roles, int nroles,
+                                    const char *mode_line, struct hd_set *sets)
+{
+    char *dir = hd_path_join(results, archive);
+    int i;
+
+    for (i = 0; i < nroles; i++)
+        set_init(&sets[i]);
+    for (i = 1; i < nroles; i++) {
+        struct hd_reader rd;
+        char *path = hd_path_join(dir, roles[i].names->diff_files);
+        struct hd_buf unescaped;
+        int lineno = 0;
+
+        if (reader_open(&rd, path) != 0) {
+            free(path);
+            continue;                       /* that destination was never hashed */
+        }
+        buf_init(&unescaped);
+        while (reader_next(&rd) == 1 && rd.complete) {
+            const char *sp;
+            int st;
+
+            lineno++;
+            if (lineno == 1 && strcmp(rd.line.data, "# hashdiff-diff: 1") != 0)
+                hd_die("invalid file '%s': unknown format", path);
+            if (rd.line.len > 0 && rd.line.data[0] == '#') {
+                if (strncmp(rd.line.data, "# mode: ", 8) == 0
+                    && strcmp(rd.line.data + 8, mode_line) != 0)
+                    hd_die("'%s' was made with other parameters (its '# mode:' line differs); "
+                           "use --force to start over", path);
+                continue;
+            }
+            /* EXTRA is skipped: that path is not in ORIGIN (section 3.5). */
+            for (st = 0; st < ST_COUNT; st++) {
+                size_t len = strlen(status_name(st));
+
+                if (strncmp(rd.line.data, status_name(st), len) != 0
+                    || rd.line.data[len] != ' ')
+                    continue;
+                if (st == ST_EXTRA)
+                    break;
+                /* STATUS ORIGIN-HASH DESTINATION-HASH PATH: the path is the fourth field. */
+                sp = strchr(rd.line.data + len + 1, ' ');
+                if (sp != NULL)
+                    sp = strchr(sp + 1, ' ');
+                if (sp == NULL)
+                    hd_die("invalid file '%s': malformed line", path);
+                buf_clear(&unescaped);
+                if (hd_unescape(&unescaped, sp + 1,
+                                rd.line.len - (size_t)(sp + 1 - rd.line.data)) != 0
+                    || unescaped.data == NULL)
+                    hd_die("invalid file '%s': malformed line", path);
+                set_add(&sets[i], unescaped.data);
+                set_add(&sets[0], unescaped.data);
+                break;
+            }
+        }
+        buf_free(&unescaped);
+        reader_close(&rd);
+        free(path);
+        set_sort(&sets[i]);
+    }
+    set_sort(&sets[0]);
+    free(dir);
+    return (unsigned long)sets[0].count;
 }

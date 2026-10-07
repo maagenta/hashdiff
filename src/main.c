@@ -30,6 +30,11 @@ struct msg {
 };
 
 static int resuming;
+static int rechecking;                  /* --recheck: only the paths that differed (3.5) */
+static char recheck_of[HD_TIME_LEN];    /* the start time of the run being rechecked */
+static unsigned long recheck_paths;     /* how many paths it reads */
+static unsigned long recheck_missing;   /* paths no tree holds any more */
+static char recheck_dir[64];            /* the archive the sets came from */
 
 /* Commands from the parent to a child, one byte. */
 #define CMD_HASH 'H'
@@ -60,10 +65,12 @@ struct side {
     int diff_open;
     int hashed;                 /* destinations: its tree matched, so it was hashed */
     int failed;                 /* destinations: its process failed, so it is not compared */
+    struct hd_set set;          /* --recheck: the paths this side reads (section 3.5) */
     struct hd_counts counts;    /* destinations: tree or content differences */
     struct hd_buf cmd;          /* destinations: the command to print, empty if none */
 };
 
+static struct hd_set recheck_sets[HD_MAX_SIDES];
 static struct side sides[HD_MAX_SIDES];
 static int nsides;              /* 1 + ndest */
 static int ndest;
@@ -125,6 +132,7 @@ static void setup_sides(const struct hd_opts *o)
         sprintf(s->names.tree, "tree-%s.txt", s->name);
         sprintf(s->names.hashes, "hashes-%s.txt", s->name);
         s->names.file_mode = o->file_mode;
+        s->names.only = NULL;
         s->names.origin_path = sides[0].path;
         s->names.dest_path = s->path;
         if (i == 0)
@@ -195,7 +203,8 @@ static void state_question(const char *output, int state, const struct hd_runsta
     }
     fprintf(stderr, "a finished run started on %s ", rs->started);
     if (state == RUNSTATE_FINISHED_DIFF)
-        fputs("whose\ndifferences were never copied (see rsync-command.txt).\n", stderr);
+        fputs("whose\ndifferences were never copied (see rsync-command.txt).\n"
+              "[c]heck those paths again, ", stderr);
     else if (rs->tree_differed > 0)
         fprintf(stderr, "with no content\ndifferences and %d destination%s whose trees "
                 "differ.\n", rs->tree_differed, hd_plural((unsigned long)rs->tree_differed));
@@ -209,6 +218,9 @@ static void state_flags(const char *results, int state)
     if (state == RUNSTATE_INTERRUPTED)
         hd_die("'%s' holds an interrupted run; use --resume to continue it or --force to "
                "start over", results);
+    if (state == RUNSTATE_FINISHED_DIFF)
+        hd_die("'%s' holds a finished run whose differences were never copied; use --recheck "
+               "to read only those paths again, or --force to start over", results);
     hd_die("'%s' holds a finished run; use --force to start over", results);
 }
 
@@ -246,6 +258,10 @@ static char ask_existing(const char *output, int state, const struct hd_runstate
             && (strcmp(line, "r") == 0 || strcmp(line, "R") == 0
                 || strcmp(line, "resume") == 0))
             return 'r';
+        if (state == RUNSTATE_FINISHED_DIFF
+            && (strcmp(line, "c") == 0 || strcmp(line, "C") == 0
+                || strcmp(line, "check") == 0 || strcmp(line, "recheck") == 0))
+            return 'c';
         if (strcmp(line, "o") == 0 || strcmp(line, "O") == 0
             || strcmp(line, "overwrite") == 0)
             return 'o';
@@ -298,10 +314,14 @@ static void take_lock(const char *results, const struct hd_opts *o)
 
 /* Creates DIR/results.hashdiff, or decides what to do with an existing one; returns 1 if
  * the run resumes. */
+/* 0 start over, 1 resume, 2 recheck (section 3.3). */
+#define START_OVER 0
+#define DO_RESUME 1
+#define DO_RECHECK 2
+
 static int prepare_results(const char *results, const struct hd_opts *o,
-                           const struct hd_role *roles)
+                           const struct hd_role *roles, struct hd_runstate *rs)
 {
-    struct hd_runstate rs;
     struct os_stat st;
     int state, fresh = os_mkdir(results) == 0;
 
@@ -318,28 +338,40 @@ static int prepare_results(const char *results, const struct hd_opts *o,
      */
     if (o->force) {
         runstate_clean(results);
-        return 0;
+        return START_OVER;
     }
-    state = runstate_inspect(results, o->output, roles, nsides, o->file_mode, &rs);
+    state = runstate_inspect(results, o->output, roles, nsides, o->file_mode, rs);
     /* Nothing was hashed, so there is nothing to decide, even with a flag (section 3.3). */
     if (state == RUNSTATE_FRESH) {
         runstate_clean(results);
-        return 0;
+        return START_OVER;
     }
     if (o->resume) {
         if (state != RUNSTATE_INTERRUPTED)
             hd_die("the previous run in %s finished; there is nothing to resume. Use --force "
                    "to start over", o->output);
-        return 1;
+        return DO_RESUME;
+    }
+    if (o->recheck) {
+        if (state != RUNSTATE_FINISHED_DIFF)
+            hd_die("the previous run in %s found no differences to check again. Use %s", 
+                   o->output, state == RUNSTATE_INTERRUPTED
+                   ? "--resume to continue it or --force to start over"
+                   : "--force to start over");
+        return DO_RECHECK;
     }
     if (os_isatty(0) && os_isatty(2)) {
-        if (ask_existing(o->output, state, &rs) == 'r')
-            return 1;
+        char answer = ask_existing(o->output, state, rs);
+
+        if (answer == 'r')
+            return DO_RESUME;
+        if (answer == 'c')
+            return DO_RECHECK;
         runstate_clean(results);
-        return 0;
+        return START_OVER;
     }
     state_flags(results, state);
-    return 0;
+    return START_OVER;
 }
 
 /* Steps 1-5 of section 3.2, before forking. */
@@ -407,6 +439,9 @@ static void run_child(struct side *s, int in_fd, int out_fd, const char *results
     if (os_caught_signal())
         hd_exit(128 + os_caught_signal());
     list_sort(&list);
+    /* Section 3.5: the traversal is complete, so a path that disappeared was still seen. */
+    if (rechecking)
+        list_filter(&list, &recheck_sets[s - sides]);
     memset(&m, 0, sizeof(m));
     if (resuming) {
         char part[64];
@@ -821,6 +856,12 @@ static int finish_run(const char *results, const struct hd_opts *o, time_t start
         }
     }
     printf("results: %s\n", results);
+    if (rechecking) {
+        sprintf(line, "recheck: only the %lu path%s that differed in the run of %s %s read\n",
+                recheck_paths, hd_plural(recheck_paths), recheck_of,
+                recheck_paths == 1 ? "was" : "were");
+        summary_line(line, footers, 0);
+    }
     for (i = 0; i < nsides; i++) {
         const struct side *s = &sides[i];
 
@@ -901,6 +942,9 @@ static int finish_run(const char *results, const struct hd_opts *o, time_t start
                    "did not match.\n      There is a copy of each one in its "
                    "results.hashdiff/rsync-command-destination-N.txt\n");
     }
+    if (recheck_missing > 0)
+        hd_warn("%lu rechecked path%s no longer exist%s in any tree", recheck_missing,
+                hd_plural(recheck_missing), recheck_missing == 1 ? "s" : "");
     fflush(stdout);
     for (i = 1; i < nsides; i++) {
         if (sides[i].diff_open)
@@ -979,7 +1023,31 @@ int main(int argc, char **argv)
         roles[i].root = sides[i].root;
         roles[i].names = &sides[i].names;
     }
-    resuming = prepare_results(results, &o, roles);
+    {
+        struct hd_runstate rs;
+        int what = prepare_results(results, &o, roles, &rs);
+
+        resuming = what == DO_RESUME;
+        rechecking = what == DO_RECHECK;
+        if (rechecking) {
+            /* The archive first, then its diff files, before anything is read (3.5). */
+            char *archive = runstate_archive(results, rs.started);
+
+            strcpy(recheck_of, rs.started);
+            recheck_paths = runstate_recheck_sets(results, archive, roles, nsides, mode.data,
+                                                  recheck_sets);
+            strncpy(recheck_dir, archive, sizeof(recheck_dir) - 1);
+            free(archive);
+        } else if (resuming && rs.recheck[0] != '\0') {
+            /* A resumed recheck reads the same paths: the archive is named in paths.txt. */
+            rechecking = 1;
+            recheck_paths = runstate_recheck_sets(results, rs.recheck, roles, nsides,
+                                                  mode.data, recheck_sets);
+            strncpy(recheck_dir, rs.recheck, sizeof(recheck_dir) - 1);
+            if (hd_time_from_stamp(rs.recheck + 5, recheck_of) == NULL)
+                strcpy(recheck_of, "an earlier run");
+        }
+    }
     stat_dir("results directory", results, &sres);
     for (i = 0; i < nsides; i++)
         sides[i].pid = 0;
@@ -991,7 +1059,8 @@ int main(int argc, char **argv)
          * keeps the paths.txt of the run it continues and adds no history block: it is the
          * same run, already recorded.
          */
-        runstate_write_paths(results, hashopts.started, o.file_mode, roles, nsides);
+        runstate_write_paths(results, hashopts.started, o.file_mode, roles, nsides,
+                             rechecking ? recheck_dir : NULL);
     }
 
     /* Tree stage: with --serial, one side at a time, in command-line order. */
@@ -1005,6 +1074,9 @@ int main(int argc, char **argv)
             receive(&sides[i], MSG_TREE, &sides[i].tree);
     for (i = 0; i < nsides; i++)
         changed += sides[i].changes > 0;
+    if (rechecking)
+        for (i = 1; i < nsides; i++)
+            sides[i].names.only = &recheck_sets[i];
     if (!resuming) {
         for (i = 1; i < nsides; i++)
             diff_trees(results, &sides[i].names, sides[0].root, sides[i].root,
@@ -1020,6 +1092,16 @@ int main(int argc, char **argv)
             tree_excluded(results, sides[i].names.tree, sides[i].root, &excluded, &nexcluded);
         for (i = 1; i < nsides; i++)
             (void)report_counts(results, sides[i].names.tree_diff, &sides[i].counts);
+    }
+    if (rechecking) {
+        /* How many of the rechecked paths no tree holds any more (section 3.5, step 4). */
+        const char *trees[HD_MAX_SIDES], *roots[HD_MAX_SIDES];
+
+        for (i = 0; i < nsides; i++) {
+            trees[i] = sides[i].names.tree;
+            roots[i] = sides[i].root;
+        }
+        recheck_missing = recheck_gone(results, trees, roots, nsides, &recheck_sets[0]);
     }
     check_interrupted();
     for (i = 1; i < nsides; i++) {
