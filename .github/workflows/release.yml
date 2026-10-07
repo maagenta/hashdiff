@@ -1,0 +1,249 @@
+name: Release
+
+# Builds the release archives for a v* tag and leaves the release as a draft: review it
+# and publish it by hand. Every binary is built where it runs, except the Intel macOS one,
+# which is cross-compiled from the arm64 runner (GitHub retired its Intel macOS image in
+# December 2025). The tests run wherever the binary is native.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build, for example v1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    name: Check the version and open the draft
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      # A release whose binaries report a different --version than the tag is worse than
+      # no release: fail before anything is published.
+      - name: Check that the tag matches HD_VERSION
+        id: version
+        run: |
+          set -eu
+          tag='${{ inputs.tag || github.ref_name }}'
+          version="$(sed -n 's/^#define HD_VERSION "\(.*\)"$/\1/p' src/config.h)"
+          test -n "$version" || { echo "no HD_VERSION in src/config.h" >&2; exit 1; }
+          if [ "${tag#v}" != "$version" ]; then
+            echo "tag $tag does not match HD_VERSION \"$version\" in src/config.h" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Open the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          sed "s/@VERSION@/$VERSION/g" .github/release-notes.md > /tmp/notes.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --draft=true --notes-file /tmp/notes.md
+          else
+            gh release create "$TAG" --draft --title "hashdiff $VERSION" \
+              --notes-file /tmp/notes.md
+          fi
+
+  linux:
+    name: linux-${{ matrix.arch }}
+    needs: draft
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.draft.outputs.tag }}
+
+      # Alpine, not the Ubuntu runner: a glibc binary would carry that glibc as a minimum
+      # version. Static musl has no libc requirement at all.
+      - name: Build and test in Alpine, statically linked against musl
+        run: |
+          set -eu
+          docker run --rm -v "$PWD:/src" -w /src alpine:latest sh -ceu '
+            apk add --no-cache build-base python3 py3-pip rsync
+            make all testhook CFLAGS_EXTRA="-static -s"
+            python3 -m venv /tmp/venv
+            make test-deps PYTHON=/tmp/venv/bin/python
+            make test CFLAGS_EXTRA="-static -s" PYTHON=/tmp/venv/bin/python
+          '
+
+      - name: Check that the binary is really static
+        run: |
+          set -eu
+          file build/hashdiff
+          file build/hashdiff | grep -Eq "statically linked|static-pie linked"
+
+      - name: Package and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.draft.outputs.tag }}
+          NAME: hashdiff-${{ needs.draft.outputs.version }}-linux-${{ matrix.arch }}
+        run: |
+          set -eu
+          mkdir -p "dist/$NAME"
+          cp build/hashdiff README.md LICENSE "dist/$NAME/"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+          gh release upload "$TAG" "dist/$NAME.tar.gz" --clobber
+
+  macos:
+    name: macos-${{ matrix.arch }}
+    needs: draft
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 10.13 is the oldest macOS these sources can target; the arm64 slice cannot go
+          # below 11.0, which is why the two binaries are built separately.
+          - arch: x86_64
+            min: "10.13"
+            native: false
+          - arch: arm64
+            min: "11.0"
+            native: true
+    env:
+      # The same flags for every make invocation: make does not rebuild an object when
+      # only the flags change, so a mismatch here would link slices built differently.
+      CF: -arch ${{ matrix.arch }} -mmacosx-version-min=${{ matrix.min }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.draft.outputs.tag }}
+
+      - uses: actions/setup-python@v7
+        if: matrix.native
+        with:
+          python-version: "3.12"
+
+      - name: Install rsync
+        if: matrix.native
+        run: brew install rsync
+
+      - name: Build
+        run: make all testhook CFLAGS_EXTRA="$CF"
+
+      # Only on the runner's own architecture: the Intel binary cannot be run here.
+      - name: Test
+        if: matrix.native
+        run: |
+          set -eu
+          make test-deps PYTHON=python
+          make test CFLAGS_EXTRA="$CF" PYTHON=python
+
+      - name: Strip, and record the architecture and the minimum macOS
+        run: |
+          set -eu
+          strip build/hashdiff
+          lipo -info build/hashdiff
+          lipo -info build/hashdiff | grep -q '${{ matrix.arch }}'
+          otool -l build/hashdiff | grep -A3 -E 'LC_VERSION_MIN_MACOSX|LC_BUILD_VERSION'
+
+      - name: Package and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.draft.outputs.tag }}
+          NAME: hashdiff-${{ needs.draft.outputs.version }}-macos-${{ matrix.arch }}
+        run: |
+          set -eu
+          mkdir -p "dist/$NAME"
+          cp build/hashdiff README.md LICENSE "dist/$NAME/"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+          gh release upload "$TAG" "dist/$NAME.tar.gz" --clobber
+
+  freebsd:
+    name: freebsd-amd64
+    needs: draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.draft.outputs.tag }}
+
+      # Built on 14 on purpose: a 14.x binary also runs on 15.x, not the other way round.
+      # The VM copies the work tree back, so build/hashdiff is here afterwards.
+      - name: Build and test in a FreeBSD 14 VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14"
+          usesh: true
+          prepare: pkg install -y gmake python3 rsync rust
+          run: |
+            set -e
+            gmake all testhook CC=cc
+            python3 -m venv /tmp/venv
+            gmake test-deps PYTHON=/tmp/venv/bin/python
+            gmake test CC=cc PYTHON=/tmp/venv/bin/python
+            strip build/hashdiff
+
+      - name: Package and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.draft.outputs.tag }}
+          NAME: hashdiff-${{ needs.draft.outputs.version }}-freebsd-amd64
+        run: |
+          set -eu
+          file build/hashdiff
+          mkdir -p "dist/$NAME"
+          cp build/hashdiff README.md LICENSE "dist/$NAME/"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+          gh release upload "$TAG" "dist/$NAME.tar.gz" --clobber
+
+  checksums:
+    name: SHA256SUMS
+    needs: [draft, linux, macos, freebsd]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hash every archive of the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.draft.outputs.tag }}
+        run: |
+          set -eu
+          mkdir dist
+          gh release download "$TAG" --dir dist --pattern '*.tar.gz'
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber
+
+      - name: Say what is left to do
+        env:
+          TAG: ${{ needs.draft.outputs.tag }}
+        run: |
+          {
+            echo "### Draft ready"
+            echo
+            echo "Review the notes and the five archives, then publish:"
+            echo
+            echo '```'
+            echo "gh release edit $TAG --draft=false"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
