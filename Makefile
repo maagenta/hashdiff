@@ -12,10 +12,10 @@ ALL_CFLAGS = $(OPT) $(WARNFLAGS) $(CFLAGS_EXTRA) $(SANFLAGS) $(DEFS)
 
 BUILD = build
 
-HDRS = src/config.h src/util.h src/os.h src/opts.h
+HDRS = src/config.h src/util.h src/os.h src/opts.h src/md5.h
 
-MAIN_SRCS     = src/main.c src/opts.c src/util.c src/os.c
-TESTHOOK_SRCS = src/testhook.c src/util.c src/os.c
+MAIN_SRCS     = src/main.c src/opts.c src/md5.c src/util.c src/os.c
+TESTHOOK_SRCS = src/testhook.c src/md5.c src/util.c src/os.c
 
 MAIN_OBJS     = $(MAIN_SRCS:src/%.c=$(BUILD)/%.o)
 TESTHOOK_OBJS = $(TESTHOOK_SRCS:src/%.c=$(BUILD)/%.o)
