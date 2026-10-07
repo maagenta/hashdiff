@@ -29,7 +29,8 @@ def test_existing_results(make_tree, compare):
     assert compare(origin, destination)[0] == 0
     code, out, err, results = compare(origin, destination)
     assert code == 2
-    assert b"--resume" in err and b"--force" in err
+    # The run finished, so --resume is not offered; only --force is (section 3.3).
+    assert b"holds a finished run" in err and b"--force" in err
     assert compare(origin, destination, "--force")[0] == 0
 
 

@@ -137,3 +137,124 @@ void runstate_write_paths(const char *results, const char *started, int file_mod
     free(path);
     buf_free(&b);
 }
+
+/* ---- the state of an existing results.hashdiff (section 3.3) ---- */
+
+static int file_in(const char *results, const char *name)
+{
+    char *path = hd_path_join(results, name);
+    struct os_stat st;
+    int r = os_lstat(path, &st) == 0 && st.kind == OS_REG;
+
+    free(path);
+    return r;
+}
+
+static void mismatch(const char *output, const char *what, const char *detail)
+{
+    if (detail != NULL)
+        hd_die("the previous run in %s %s ('%s'); use --force to start over", output, what,
+               detail);
+    hd_die("the previous run in %s %s; use --force to start over", output, what);
+}
+
+/* Compares paths.txt with the run that is starting; fills out->started. */
+static void check_paths(const char *results, const char *output,
+                        const struct hd_role *roles, int nroles, int file_mode,
+                        struct hd_runstate *out)
+{
+    char *path = hd_path_join(results, "paths.txt");
+    struct hd_reader rd;
+    struct hd_buf value;
+    int lineno = 0, seen = 0, was_file = 0;
+
+    if (reader_open(&rd, path) != 0)
+        hd_die("'%s' was written by an older hashdiff (it has no paths.txt); use --force to "
+               "start over", results);
+    out->started[0] = '\0';
+    buf_init(&value);
+    while (reader_next(&rd) == 1 && rd.complete) {
+        const char *sep;
+        size_t label;
+
+        lineno++;
+        if (lineno == 1 && strcmp(rd.line.data, "# hashdiff-paths: 1") != 0)
+            hd_die("invalid file '%s': unknown format", path);
+        if (rd.line.len > 0 && rd.line.data[0] == '#') {
+            if (strncmp(rd.line.data, "# started: ", 11) == 0) {
+                strncpy(out->started, rd.line.data + 11, HD_TIME_LEN - 1);
+                out->started[HD_TIME_LEN - 1] = '\0';
+            } else if (strcmp(rd.line.data, "# file: 1") == 0) {
+                was_file = 1;
+            }
+            continue;
+        }
+        sep = strchr(rd.line.data, ' ');
+        if (sep == NULL)
+            hd_die("invalid file '%s': malformed line", path);
+        if (seen >= nroles)
+            mismatch(output, "compared more destinations than this one", NULL);
+        label = (size_t)(sep - rd.line.data);
+        if (label != strlen(roles[seen].name)
+            || strncmp(rd.line.data, roles[seen].name, label) != 0)
+            mismatch(output, "compared a different number of destinations", NULL);
+        buf_clear(&value);
+        if (hd_unescape(&value, sep + 1, rd.line.len - (size_t)(sep + 1 - rd.line.data)) != 0)
+            hd_die("invalid file '%s': malformed line", path);
+        if (value.data == NULL || strcmp(value.data, roles[seen].root) != 0)
+            mismatch(output, roles[seen].name[0] == 'o' ? "used a different ORIGIN"
+                     : "used a different destination", value.data);
+        seen++;
+    }
+    reader_close(&rd);
+    buf_free(&value);
+    free(path);
+    if (seen != nroles)
+        mismatch(output, "compared a different number of destinations", NULL);
+    if (was_file != (file_mode != 0))
+        mismatch(output, was_file ? "compared files, not directories"
+                 : "compared directories, not files", NULL);
+}
+
+int runstate_inspect(const char *results, const char *output, const struct hd_role *roles,
+                     int nroles, int file_mode, struct hd_runstate *out)
+{
+    char name[80];
+    int i, interrupted = 0, differences = 0;
+
+    out->state = RUNSTATE_FRESH;
+    out->started[0] = '\0';
+    out->tree_differed = 0;
+    if (!runstate_has_hashes(results))
+        return RUNSTATE_FRESH;
+    check_paths(results, output, roles, nroles, file_mode, out);
+
+    /*
+     * A destination was hashed when its tree-diff file holds no record: that is the decision
+     * of the tree stage, still on disk, and what tells which sides should have a journal.
+     */
+    for (i = 1; i < nroles; i++) {
+        struct hd_counts c;
+
+        if (!file_in(results, roles[i].names->tree_diff)
+            || report_counts(results, roles[i].names->tree_diff, &c) > 0) {
+            out->tree_differed++;
+            continue;
+        }
+        if (report_counts(results, roles[i].names->diff_files, &c) > 0)
+            differences = 1;
+    }
+    for (i = 0; i < nroles; i++) {
+        struct hd_counts c;
+
+        if (i > 0 && (!file_in(results, roles[i].names->tree_diff)
+                      || report_counts(results, roles[i].names->tree_diff, &c) > 0))
+            continue;                   /* this destination was never hashed */
+        sprintf(name, "%s.tmp", roles[i].names->hashes);
+        if (file_in(results, name) || !file_in(results, roles[i].names->hashes))
+            interrupted = 1;
+    }
+    out->state = interrupted ? RUNSTATE_INTERRUPTED
+                 : differences ? RUNSTATE_FINISHED_DIFF : RUNSTATE_FINISHED_CLEAN;
+    return out->state;
+}

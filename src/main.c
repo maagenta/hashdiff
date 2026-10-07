@@ -136,16 +136,43 @@ static void remove_file(const char *dir, const char *name, const char *suffix)
     free(p);
 }
 
+/* Section 3.3: what the prompt of each state offers, and the flags that answer it. */
+static void state_question(const char *output, int state, const struct hd_runstate *rs)
+{
+    fprintf(stderr, "results.hashdiff in %s holds ", output);
+    if (state == RUNSTATE_INTERRUPTED) {
+        fprintf(stderr, "an interrupted run started on %s.\n[r]esume, [o]verwrite or "
+                "[a]bort? ", rs->started);
+        return;
+    }
+    fprintf(stderr, "a finished run started on %s ", rs->started);
+    if (state == RUNSTATE_FINISHED_DIFF)
+        fputs("whose\ndifferences were never copied (see rsync-command.txt).\n", stderr);
+    else if (rs->tree_differed > 0)
+        fprintf(stderr, "with no content\ndifferences and %d destination%s whose trees "
+                "differ.\n", rs->tree_differed, hd_plural((unsigned long)rs->tree_differed));
+    else
+        fputs("with no content differences.\n", stderr);
+    fputs("[o]verwrite or [a]bort? ", stderr);
+}
+
+static void state_flags(const char *results, int state)
+{
+    if (state == RUNSTATE_INTERRUPTED)
+        hd_die("'%s' holds an interrupted run; use --resume to continue it or --force to "
+               "start over", results);
+    hd_die("'%s' holds a finished run; use --force to start over", results);
+}
+
 /* Asks on the terminal what to do with an existing results.hashdiff: 'r' or 'o'. */
-static char ask_existing(const char *output)
+static char ask_existing(const char *output, int state, const struct hd_runstate *rs)
 {
     for (;;) {
         char line[64], c;
         size_t n = 0;
         ssize_t r;
 
-        fprintf(stderr, "results.hashdiff already exists in %s: [r]esume, [o]verwrite or "
-                "[a]bort? ", output);
+        state_question(output, state, rs);
         fflush(stderr);
         while ((r = os_read(0, &c, 1)) == 1 && c != '\n')
             if (n + 1 < sizeof(line))
@@ -159,7 +186,9 @@ static char ask_existing(const char *output)
         while (n > 0 && (line[n - 1] == ' ' || line[n - 1] == '\r'))
             n--;
         line[n] = '\0';
-        if (strcmp(line, "r") == 0 || strcmp(line, "R") == 0 || strcmp(line, "resume") == 0)
+        if (state == RUNSTATE_INTERRUPTED
+            && (strcmp(line, "r") == 0 || strcmp(line, "R") == 0
+                || strcmp(line, "resume") == 0))
             return 'r';
         if (strcmp(line, "o") == 0 || strcmp(line, "O") == 0
             || strcmp(line, "overwrite") == 0)
@@ -173,29 +202,45 @@ static char ask_existing(const char *output)
 
 /* Creates DIR/results.hashdiff, or decides what to do with an existing one; returns 1 if
  * the run resumes. */
-static int prepare_results(const char *results, const struct hd_opts *o)
+static int prepare_results(const char *results, const struct hd_opts *o,
+                           const struct hd_role *roles)
 {
+    struct hd_runstate rs;
     struct os_stat st;
+    int state;
 
     if (os_mkdir(results) == 0)
         return 0;
     if (errno != EEXIST)
         hd_die("cannot create '%s': %s", results, strerror(errno));
     stat_dir("results directory", results, &st);
-    if (!runstate_has_hashes(results) || o->force) {
+    /*
+     * --force comes before every check: a directory whose paths.txt is missing or describes
+     * another run is exactly what it is for, and every message below suggests it.
+     */
+    if (o->force) {
         runstate_clean(results);
         return 0;
     }
-    if (o->resume)
+    state = runstate_inspect(results, o->output, roles, nsides, 0, &rs);
+    /* Nothing was hashed, so there is nothing to decide, even with a flag (section 3.3). */
+    if (state == RUNSTATE_FRESH) {
+        runstate_clean(results);
+        return 0;
+    }
+    if (o->resume) {
+        if (state != RUNSTATE_INTERRUPTED)
+            hd_die("the previous run in %s finished; there is nothing to resume. Use --force "
+                   "to start over", o->output);
         return 1;
+    }
     if (os_isatty(0) && os_isatty(2)) {
-        if (ask_existing(o->output) == 'r')
+        if (ask_existing(o->output, state, &rs) == 'r')
             return 1;
         runstate_clean(results);
         return 0;
     }
-    hd_die("'%s' already exists; use --resume to continue the previous run or --force to "
-           "start over", results);
+    state_flags(results, state);
     return 0;
 }
 
@@ -792,6 +837,7 @@ int main(int argc, char **argv)
     struct hd_opts o;
     struct os_stat sout, sres;
     struct hd_buf mode;
+    struct hd_role roles[HD_MAX_SIDES];
     char **excluded = NULL;
     size_t nexcluded = 0, k;
     char *results;
@@ -822,7 +868,12 @@ int main(int argc, char **argv)
                 "usually reduces throughput", nsides, o.jobs, nsides * o.jobs);
     os_install_signal_handlers();
     results = hd_path_join(o.output, RESULTS_NAME);
-    resuming = prepare_results(results, &o);
+    for (i = 0; i < nsides; i++) {
+        roles[i].name = sides[i].name;
+        roles[i].root = sides[i].root;
+        roles[i].names = &sides[i].names;
+    }
+    resuming = prepare_results(results, &o, roles);
     stat_dir("results directory", results, &sres);
     for (i = 0; i < nsides; i++)
         sides[i].pid = 0;
@@ -834,12 +885,6 @@ int main(int argc, char **argv)
          * keeps the paths.txt of the run it continues and adds no history block: it is the
          * same run, already recorded.
          */
-        struct hd_role roles[HD_MAX_SIDES];
-
-        for (i = 0; i < nsides; i++) {
-            roles[i].name = sides[i].name;
-            roles[i].root = sides[i].root;
-        }
         runstate_write_paths(results, hashopts.started, 0, roles, nsides);
     }
 

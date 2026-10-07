@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from conftest import RESULT_FILES, Symlink, read_bytes, strip_time
+from conftest import RESULT_FILES, Symlink, read_bytes, run_on_pty, strip_time
 
 DIFF_OUTPUTS = [b"diff-files.txt", b"rsync-files.lst", b"rsync-command.txt"]
 # "# hashdiff-format:", "# root:", "# mode:" and "# started:" (section 8).
@@ -91,15 +91,27 @@ def reused(stdout, side):
     raise AssertionError("no resume line for %r in %r" % (side, stdout))
 
 
+def cut_both(runs, at=HEADER_LINES + 10):
+    """Turns a finished run into an interrupted one, so there is something to resume."""
+    data = {side: read_bytes(runs.path(b"hashes-%s.txt" % side))
+            for side in (b"origin", b"destination")}
+    runs.simulate_interruption({side: line_offset(data[side], at) for side in data})
+
+
 def test_resume_refused_with_other_parameters(make_tree, run_hashdiff, tmp_path):
     origin, destination = make_pair(make_tree)
     runs = Runs(run_hashdiff, tmp_path, origin, destination)
     assert runs.run()[0] == 1
+    # A finished run has nothing to resume, whatever the parameters are (section 3.3).
+    code, out, err = runs.run("--resume")
+    assert code == 2 and b"nothing to resume" in err and b"--force" in err
+    cut_both(runs)
     code, out, err = runs.run("--resume", "--fast")
     assert code == 2 and b"--force" in err and b"mode" in err
+    # paths.txt catches another root before the journals are even opened (section 3.3).
     other = make_tree("other", spec())
     code, out, err = run_hashdiff(other, destination, "-o", runs.out, "--resume")
-    assert code == 2 and b"another root" in err
+    assert code == 2 and b"a different ORIGIN" in err and b"--force" in err
     code, out, err = runs.run("--resume", "--force")
     assert code == 2
 
@@ -213,35 +225,13 @@ def test_trees_changed_after_interruption(make_tree, run_hashdiff, tmp_path, par
     runs.assert_identical_to_uninterrupted()
 
 
-def run_on_pty(hashdiff_bin, args, answers):
-    """Runs hashdiff with stdin and stderr on a pseudo-terminal, typing answers."""
-    master, slave = os.openpty()
-    try:
-        proc = subprocess.Popen([hashdiff_bin] + args, stdin=slave, stdout=subprocess.PIPE,
-                                stderr=slave)
-    finally:
-        os.close(slave)
-    os.write(master, answers)
-    chunks = []
-    while True:
-        try:
-            data = os.read(master, 65536)
-        except OSError:
-            break
-        if not data:
-            break
-        chunks.append(data)
-    stdout, _ = proc.communicate()
-    os.close(master)
-    return proc.returncode, stdout, b"".join(chunks)
-
-
 def test_prompt(make_tree, run_hashdiff, hashdiff_bin, tmp_path):
     origin, destination = make_pair(make_tree)
     runs = Runs(run_hashdiff, tmp_path, origin, destination)
     assert runs.run()[0] == 1
+    cut_both(runs)
     args = [origin, destination, "-o", runs.out]
-    prompt = b"results.hashdiff already exists in "
+    prompt = b"holds an interrupted run started on "
     before = {n: read_bytes(runs.path(n)) for n in os.listdir(runs.results)}
 
     code, out, term = run_on_pty(hashdiff_bin, args, b"a\n")

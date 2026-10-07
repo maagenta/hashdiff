@@ -256,6 +256,29 @@ def compare(run_hashdiff, tmp_path):
     return run
 
 
+def run_on_pty(hashdiff_bin, args, answers):
+    """Runs hashdiff with stdin and stderr on a pseudo-terminal, typing answers."""
+    master, slave = os.openpty()
+    try:
+        proc = subprocess.Popen([hashdiff_bin] + args, stdin=slave, stdout=subprocess.PIPE,
+                                stderr=slave)
+    finally:
+        os.close(slave)
+    os.write(master, answers)
+    chunks = []
+    while True:
+        try:
+            data = os.read(master, 65536)
+        except OSError:
+            break
+        if not data:
+            break
+        chunks.append(data)
+    stdout, _ = proc.communicate()
+    os.close(master)
+    return proc.returncode, stdout, b"".join(chunks)
+
+
 def read_bytes(path):
     with open(path, "rb") as f:
         return f.read()

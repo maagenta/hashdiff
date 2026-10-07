@@ -195,13 +195,24 @@ them.
 ## Resume
 
 The hashes files are written progressively, in order, as `hashes-*.txt.tmp`. If a run is
-interrupted (Ctrl-C, `kill`, crash, power loss), run the same command again. When
-`results.hashdiff` exists:
+interrupted (Ctrl-C, `kill`, crash, power loss), run the same command again.
 
-- with `--resume`, hashdiff continues the interrupted run;
-- with `--force`, it starts over;
-- with neither, on a terminal it asks `[r]esume, [o]verwrite or [a]bort?`; in a script it
-  stops with an error that suggests `--resume` or `--force`.
+When `results.hashdiff` already exists, hashdiff reads what state the previous run left it in
+and says so. A journal left behind means it was interrupted; every side published means it
+finished; a diff file with a record means it found differences that were never copied. So:
+
+- an interrupted run can be resumed, overwritten or left alone: `--resume`, `--force`, or on a
+  terminal `[r]esume, [o]verwrite or [a]bort?`;
+- a finished run has nothing to resume, so the only choices are `--force` or aborting, and the
+  question says whether it found differences and when it ran;
+- if nothing was hashed at all, as after an exit 4, there is nothing to decide and the run
+  starts over without asking;
+- a previous run over other directories, or over a different number of them, is never a
+  question: it stops and says which role changed, because lists made from another tree are not
+  comparable. `--force` is the way through, and it is honoured before any of these checks.
+
+In a script, with no terminal, every one of those stops with an error that names the flags that
+state accepts.
 
 When resuming, hashdiff lists both trees again and compares them with the saved
 `tree-*.txt`, including modification times. If anything changed, it writes

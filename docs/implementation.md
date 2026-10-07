@@ -439,7 +439,9 @@ Flags, which never ask anything:
 - --resume: state 1 resumes (section 3.4). In states 2 and 3 it is a fatal error, because the
   previous run finished and there is nothing to resume; the message suggests --force, and
   --recheck as well in state 3.
-- --force: any state. Clean the directory and start over.
+- --force: any state, and before every check above, because a directory whose paths.txt is
+  missing or describes another run is exactly what it is for, and every message above suggests
+  it. Clean the directory and start over.
 - --recheck: state 3 (section 3.5). In states 1 and 2 it is a fatal error suggesting --resume
   or --force.
 
