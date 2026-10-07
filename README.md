@@ -193,8 +193,8 @@ Tests that need something unavailable are skipped with a reason: rsync not in PA
 running as root (permission tests), no sparse files, or a filesystem that rejects
 non-UTF-8 file names (macOS APFS).
 
-Continuous integration runs on Linux (gcc, clang, 32-bit, musl, sanitizers), macOS and
-FreeBSD.
+Continuous integration runs on Linux (gcc, clang, 32-bit, arm64, musl, sanitizers), macOS
+and FreeBSD.
 
 ## License
 

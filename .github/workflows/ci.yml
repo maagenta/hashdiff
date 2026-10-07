@@ -26,6 +26,10 @@ jobs:
             cc: gcc -m32
             apt: rsync gcc-multilib
             slow: "1"
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            cc: gcc
+            apt: rsync
           - name: macos
             os: macos-latest
             cc: clang
