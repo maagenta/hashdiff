@@ -5,8 +5,10 @@ goes into the `<!-- Write the summary of this release here -->` placeholder of
 `.github/release-notes.md` when the draft release for its tag is reviewed and published, so
 the two never say different things.
 
-**Backlog** is below the versions: nothing in it is implemented, and
-`docs/implementation.md` remains the binding specification.
+Between the versions there are two lists of work that no code does yet, in decreasing order
+of certainty: **Specified**, whose design is closed and lives in `docs/implementation.md`, and
+**Backlog**, whose design is not. `docs/implementation.md` is the binding specification for
+everything in the first list.
 
 ## v1.1 (unreleased)
 
@@ -34,20 +36,19 @@ Until the tag exists, use the v1.0 release:
 3. Push the tag, let the workflow build the five archives and `SHA256SUMS`, review the
    draft and publish it with `gh release edit vX.Y --draft=false`.
 
-## Backlog
+## Specified (using docs/implementation.md)
 
-Nothing below is implemented in code. Every item has been folded into
-`docs/implementation.md`, with its tests in section 11 and its phase in section 12, and each
-one says where: **from here on the specification is what counts**, and this list is kept only
-for the intent behind each item and for the record of what was decided. Every **Decide** was
-resolved there with the recommendation written under it; the spec is the place to argue with
-any of them.
+Designed, not written: every item below is in `docs/implementation.md`, with its tests in
+section 11 and its phase in section 12, and each one says which section holds it.
+**For these, the specification is what counts**; this list is kept for the intent behind each
+item and for the record of what was decided. The **Decide** points were resolved in the spec
+with the recommendation written under each one, so that is the place to argue with any of them.
+Phases 9 to 15 cover the lot, and no line of code exists for any of it yet.
 
-Scope is open too: items 1 to 3 and 9 are small and self-contained and would fit in v1.1,
-items 4 to 6 change the on-disk formats and have to land together with one format bump, and
-7 and 8 are the two features. Item 7 renames every per-destination file, so anything that
-touches those names is cheaper after it: consider doing it first even though it is the
-largest.
+Scope is open: items 1 to 3 and 9 are small and self-contained and would fit in v1.1, items 4
+to 6 change the on-disk formats and have to land together with one format bump, and 7 and 8
+are the two features. Item 7 renames every per-destination file, so anything that touches those
+names is cheaper after it: consider doing it first even though it is the largest.
 
 ### 1. Relative paths in ORIGIN, DESTINATION and --output
 
@@ -451,6 +452,63 @@ With `--file`, ORIGIN and the destinations are regular files instead of director
   has two shapes. It does not matter while the summary is only read by a person, but item 4
   stores it inside `diff-files.txt`, where a parser then has to handle both. Printing
   `elapsed: 0 s, - MB/s` keeps one shape.
+
+## Backlog
+
+Not in `docs/implementation.md` yet: the intent and a recommendation, with nothing settled. An
+item moves up to **Specified** once its **Decide** points are answered and it has a section,
+its tests and a phase in the spec. Item 10 depends on nothing and could land anywhere, but the
+lock it describes is what keeps two runs from corrupting one directory, which argues for having
+it early.
+
+### 10. Refuse to touch a results.hashdiff that another run is using
+
+The worst case this prevents is real and silent: two hashdiff runs on one results.hashdiff
+append to the same journal, and what is left is a file that is not a canonical prefix of
+anything, which the resume of section 3.4 then trusts and reuses.
+
+A lock does it, in POSIX and nothing else:
+
+1. `results.hashdiff/lock`, opened once at startup and held open for the whole run, with an
+   advisory write lock taken through `fcntl(F_SETLK)`. The kernel releases it when the process
+   dies, so a crash, a `kill -9` or a power loss leaves nothing stale behind and no "is this
+   lock still valid" guesswork. The lock belongs to the parent; the children inherit the
+   descriptor but hold nothing, and the parent outlives them by design (section 7).
+2. When it is already held, `fcntl(F_GETLK)` fills in `l_pid`, the pid of the holder:
+
+       hashdiff: results.hashdiff in DIR is in use by process 48213.
+       continue anyway? [y]es or [a]bort?
+
+   `y` continues, `a` exits 2, any other answer repeats the question and EOF exits 2, as in
+   section 3.3. Over NFS `l_pid` is a pid on another machine and means nothing locally, so the
+   message then says only that the directory is in use.
+3. No process name. Translating a pid to a name is the one piece that is not POSIX, and it
+   would cost three backends: `/proc/<pid>/comm` on Linux, `proc_pidpath` on macOS, and
+   `libprocstat` on FreeBSD, which is a dependency outside libc that section 1 forbids.
+   Calling `lsof` is not an option either: hashdiff never executes an external command, it
+   does not even run the rsync command it prints. The pid is enough to find the process with
+   `ps`.
+4. Every run takes the lock, not only a resume or an overwrite. Two runs starting at the same
+   moment on a fresh directory are as bad as one overwriting another, and one rule is simpler
+   than two.
+5. The flag for scripts is `--ignore-lock`, and without a terminal the run stops with a fatal
+   error that names it. Not `--force`: --force means "discard these results", and the user who
+   wants to discard them is precisely the one who must not do it while another run is writing
+   them.
+6. `lock` goes into the table of section 3, is never removed by the cleaning of section 3.3
+   and is never moved into a `scan-*` archive by section 3.5, like `history.txt`.
+
+What it does not cover, and the README should say so: only runs that take the lock are seen,
+so an editor holding `diff-files.txt` open or a `cp` copying the directory is invisible; and
+`fcntl` locks over NFS depend on the server's lock manager and may be ignored without saying
+so, so the lock is not a guarantee on a network filesystem. The lock covers
+results.hashdiff and never ORIGIN or the destinations, where the existing rule stands
+unchanged (do not run rsync on the trees while hashdiff is running).
+
+Tests: a helper process holds `fcntl.lockf` on `results.hashdiff/lock`; hashdiff prints the
+message with that pid, exits 2 without a terminal and proceeds with `--ignore-lock`. The helper
+killed with `SIGKILL` leaves no lock and the next run takes it without asking. Two hashdiffs
+started at once on a fresh directory: the second one stops.
 
 ## v1.0
 
