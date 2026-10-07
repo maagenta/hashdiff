@@ -50,7 +50,7 @@ void suggest_command(struct hd_buf *out, const struct hd_counts *c, const char *
 
 /* Hash stage: writes diff-files.txt, rsync-files.lst and rsync-command.txt; the rsync
  * command is also returned in *cmd (empty if there is nothing to copy). */
-void diff_hashes(const char *results, const char *abs_results, const char *abs_origin,
+void diff_hashes(const char *results, const char *abs_origin,
                  const char *abs_destination, struct hd_counts *c, struct hd_buf *cmd);
 
 /* Parses 32 lowercase hex digits into a digest. */

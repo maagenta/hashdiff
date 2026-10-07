@@ -52,6 +52,15 @@ char *arena_strndup(struct hd_arena *a, const char *s, size_t n);
 /* Joins a directory and a name with exactly one '/' (dir may be "/"); malloc'd. */
 char *hd_path_join(const char *dir, const char *name);
 
+/* Section 2.1: absolute and lexically cleaned, so the same directory is always written the
+ * same way. No '.' or '..' component, no "//" and no trailing '/' (except the root "/").
+ * Relative paths are taken from getcwd(); symlinks are never resolved. malloc'd; fatal if
+ * the current directory cannot be read. */
+char *hd_clean_abs(const char *p);
+
+/* "" or "s", for a count printed next to a noun (section 9). */
+const char *hd_plural(unsigned long n);
+
 /* Path escaping of the output files: '\' -> "\\", LF -> "\n", CR -> "\r". */
 void hd_escape(struct hd_buf *out, const char *s);
 /* Appends the unescaped form of s[0..n); returns -1 if the escaping is invalid. */

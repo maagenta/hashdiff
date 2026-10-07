@@ -8,9 +8,9 @@
 #define HD_PROFILE_HDD 1
 
 struct hd_opts {
-    char *origin;        /* trailing slashes removed */
+    char *origin;        /* cleaned absolute path (section 2.1) */
     char *destination;
-    const char *output;  /* directory where results.hashdiff is created */
+    char *output;        /* cleaned absolute directory where results.hashdiff is created */
     int resume;
     int force;
     int fast;

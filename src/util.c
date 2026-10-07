@@ -198,6 +198,79 @@ char *hd_path_join(const char *dir, const char *name)
     return p;
 }
 
+/*
+ * Cleans an absolute path in place of a fresh buffer: drops '.' components, lets a '..'
+ * component remove the one before it, collapses runs of '/' and leaves no trailing '/'.
+ * starts[] keeps, per kept component, the length the output had before it was written, which
+ * is where '..' truncates back to.
+ */
+static char *clean_abs_string(const char *s)
+{
+    size_t n = strlen(s);
+    char *out = xmalloc(n + 2);
+    size_t *starts = xmalloc((n + 2) * sizeof(*starts));
+    size_t nstart = 0, len = 1;
+    const char *in = s;
+
+    out[0] = '/';
+    while (*in != '\0') {
+        const char *seg;
+        size_t seglen;
+
+        while (*in == '/')
+            in++;
+        seg = in;
+        while (*in != '\0' && *in != '/')
+            in++;
+        seglen = (size_t)(in - seg);
+        if (seglen == 0)
+            break;
+        if (seglen == 1 && seg[0] == '.')
+            continue;
+        if (seglen == 2 && seg[0] == '.' && seg[1] == '.') {
+            if (nstart > 0)
+                len = starts[--nstart];
+            continue;
+        }
+        starts[nstart++] = len;
+        if (len > 1)
+            out[len++] = '/';
+        memcpy(out + len, seg, seglen);
+        len += seglen;
+    }
+    out[len] = '\0';
+    free(starts);
+    return out;
+}
+
+char *hd_clean_abs(const char *p)
+{
+    struct hd_buf raw;
+    char *out;
+
+    if (p[0] == '/')
+        return clean_abs_string(p);
+    buf_init(&raw);
+    {
+        char *cwd = os_getcwd();
+
+        if (cwd == NULL)
+            hd_die("cannot get the current directory: %s", strerror(errno));
+        buf_append_str(&raw, cwd);
+        free(cwd);
+    }
+    buf_append_char(&raw, '/');
+    buf_append_str(&raw, p);
+    out = clean_abs_string(raw.data);
+    buf_free(&raw);
+    return out;
+}
+
+const char *hd_plural(unsigned long n)
+{
+    return n == 1 ? "" : "s";
+}
+
 void hd_escape(struct hd_buf *out, const char *s)
 {
     for (; *s != '\0'; s++) {

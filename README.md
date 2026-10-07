@@ -47,6 +47,14 @@ Options may appear before, between or after the two paths.
 
 SIZE is an integer with an optional K, M, G or T suffix (powers of 1024).
 
+Every path is cleaned before anything else: a relative path is taken from the current
+directory, and `.`, `..` and repeated slashes are removed. So `photos`, `./photos/` and
+`"$PWD/photos"` are the same run, they write the same files byte for byte, and either of them
+can resume the other. Symlinks are never resolved, and `..` is removed the way a shell does
+without `-P`: if the component before it is a symlink to another directory, hashdiff uses the
+cleaned path and not the one the kernel would reach, so pass an absolute path if there is any
+doubt.
+
 Examples:
 
     # Full comparison; results in ./results.hashdiff

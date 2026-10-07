@@ -21,7 +21,8 @@ def test_tree_differences(make_tree, compare, parsers):
     assert sorted(os.listdir(results)) == [b"tree-destination.txt", b"tree-diff.txt",
                                            b"tree-origin.txt"]
     assert b"trees differ; nothing was hashed" in err
-    assert b"1 files exist only in DESTINATION" in err
+    assert b"1 file exists only in DESTINATION" in err
+    assert b"will delete it." in err
     assert b"--delete-after" in printed_command(out)
 
 

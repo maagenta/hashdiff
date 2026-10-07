@@ -139,17 +139,6 @@ static int parse_jobs(const char *s, int *out)
     return 0;
 }
 
-/* The root "/" is preserved: the n > 1 guard keeps its only slash. */
-static char *strip_trailing_slashes(const char *s)
-{
-    char *p = xstrdup(s);
-    size_t n = strlen(p);
-
-    while (n > 1 && p[n - 1] == '/')
-        p[--n] = '\0';
-    return p;
-}
-
 /* Flags of options given explicitly, for the "no effect without --fast" warnings. */
 struct seen {
     int gap;
@@ -163,7 +152,8 @@ static int apply(const struct optdef *d, const char *val, struct hd_opts *o, str
 
     switch (d->id) {
     case OPT_OUTPUT:
-        o->output = val;
+        free(o->output);
+        o->output = xstrdup(val);
         break;
     case OPT_RESUME:
         o->resume = 1;
@@ -350,7 +340,7 @@ static int parse_args(int argc, char **argv, struct hd_opts *o)
         usage_error("ORIGIN and DESTINATION must not be empty", NULL);
         return OPTS_ERROR;
     }
-    if (o->output[0] == '\0') {
+    if (o->output != NULL && o->output[0] == '\0') {
         usage_error("--output must not be empty", NULL);
         return OPTS_ERROR;
     }
@@ -366,8 +356,15 @@ static int parse_args(int argc, char **argv, struct hd_opts *o)
         if (seen.profile)
             hd_warn("--profile has no effect without --fast");
     }
-    o->origin = strip_trailing_slashes(paths[0]);
-    o->destination = strip_trailing_slashes(paths[1]);
+    /* Section 2.1: every path is cleaned once, here, and only the cleaned form is used. */
+    o->origin = hd_clean_abs(paths[0]);
+    o->destination = hd_clean_abs(paths[1]);
+    {
+        char *given = o->output;
+
+        o->output = hd_clean_abs(given == NULL ? "." : given);
+        free(given);
+    }
     return OPTS_RUN;
 }
 
@@ -377,7 +374,7 @@ int opts_parse(int argc, char **argv, struct hd_opts *o)
 
     o->origin = NULL;
     o->destination = NULL;
-    o->output = ".";
+    o->output = NULL;
     o->resume = 0;
     o->force = 0;
     o->fast = 0;
@@ -398,6 +395,8 @@ void opts_free(struct hd_opts *o)
 {
     free(o->origin);
     free(o->destination);
+    free(o->output);
     o->origin = NULL;
     o->destination = NULL;
+    o->output = NULL;
 }

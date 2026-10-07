@@ -341,7 +341,9 @@ single entry of section 2.3, but the file is written and compared in the same wa
       --delete-after and will delete them. Review tree-diff.txt before running it.
 
   The second appears when that destination has any ERR-SRC or ERR-DST, alone or with other
-  statuses, and the third when it has EXTRA paths. With several destinations each message is
+  statuses, and the third when it has EXTRA paths. A count of 1 puts the whole sentence in the
+  singular, verb and pronoun included: `1 file exists only in DESTINATION; the suggested
+  command uses --delete-after and will delete it.`, and `1 path could not be read`. With several destinations each message is
   printed once per destination concerned, naming it and its own tree-diff file, and the
   first becomes `hashdiff: the trees of ORIGIN and destination-2 differ; destination-2 was
   not hashed. See tree-diff-destination-2.txt, fix the differences (for example with the

@@ -47,8 +47,7 @@ struct side {
     const char *name;           /* "origin" or "destination" */
     const char *resume_source;  /* resume: journal of the interrupted run, or NULL */
     unsigned long changes;      /* resume: differences with the saved tree */
-    const char *root;           /* as given, trailing slashes removed */
-    char *abs_root;
+    const char *root;           /* cleaned absolute path (section 2.1) */
     struct os_stat st;
     long pid;
     int to_child;               /* parent's end of the parent -> child pipe */
@@ -58,23 +57,6 @@ struct side {
 };
 
 static struct side sides[2];
-
-/* Absolute form of a path: getcwd + concatenation, without resolving symlinks. */
-static char *absolute_path(const char *p)
-{
-    char *cwd, *abs;
-
-    if (p[0] == '/')
-        return xstrdup(p);
-    cwd = os_getcwd();
-    if (cwd == NULL)
-        hd_die("cannot get the current directory: %s", strerror(errno));
-    if (strcmp(p, ".") == 0)
-        return cwd;
-    abs = hd_path_join(cwd, p);
-    free(cwd);
-    return abs;
-}
 
 static void stat_dir(const char *what, const char *path, struct os_stat *st)
 {
@@ -205,10 +187,10 @@ static void prepare_resume(const char *results, const char *mode_line)
         sprintf(sources[i][1], "hashes-%s.txt", sides[i].name);
         sprintf(tree, "tree-%s.txt", sides[i].name);
         remove_file(results, sources[i][1], ".new");
-        resume_check_tree(results, tree, sides[i].abs_root);
+        resume_check_tree(results, tree, sides[i].root);
         sides[i].resume_source = NULL;
         for (j = 0; j < 2 && sides[i].resume_source == NULL; j++)
-            if (resume_check_hashes(results, sources[i][j], sides[i].abs_root, mode_line) == 0)
+            if (resume_check_hashes(results, sources[i][j], sides[i].root, mode_line) == 0)
                 sides[i].resume_source = sources[i][j];
     }
     remove_file(results, "diff-files.txt", "");
@@ -259,11 +241,11 @@ static void run_child(struct side *s, int in_fd, int out_fd, const char *results
 
         sprintf(tree, "tree-%s.txt", s->name);
         sprintf(part, "tree-changes.txt.%s.part", s->name);
-        m.changes = tree_changes(results, tree, s->abs_root, &list, part);
+        m.changes = tree_changes(results, tree, s->root, &list, part);
         if (m.changes == 0)
             remove_file(results, part, "");
     } else {
-        tree_write(results, s->name, s->abs_root, &list);
+        tree_write(results, s->name, s->root, &list);
     }
     m.kind = MSG_TREE;
     stats_init(&m.stats);
@@ -278,7 +260,7 @@ static void run_child(struct side *s, int in_fd, int out_fd, const char *results
     memset(&m, 0, sizeof(m));
     m.kind = MSG_HASHES;
     stats_init(&m.stats);
-    sig = hash_side(s->root, &list, results, s->name, s->abs_root, &hashopts,
+    sig = hash_side(s->root, &list, results, s->name, s->root, &hashopts,
                     resuming ? s->resume_source : NULL, &m.stats);
     if (sig != 0)
         hd_exit(128 + sig);
@@ -495,9 +477,9 @@ static int finish_tree_changes(const char *results)
     outfile_open(&out, results, "tree-changes.txt");
     buf_init(&b);
     buf_append_str(&b, "# origin: ");
-    hd_escape(&b, sides[0].abs_root);
+    hd_escape(&b, sides[0].root);
     buf_append_str(&b, "\n# destination: ");
-    hd_escape(&b, sides[1].abs_root);
+    hd_escape(&b, sides[1].root);
     buf_append_char(&b, '\n');
     outfile_write(&out, b.data, b.len);
     buf_free(&b);
@@ -525,20 +507,20 @@ static int finish_tree_changes(const char *results)
 }
 
 /* Summary of a tree stage that found differences; returns the exit status (4). */
-static int finish_tree_stage(const struct hd_counts *c, const char *abs_results,
+static int finish_tree_stage(const struct hd_counts *c, const char *results,
                              const struct hd_opts *o, char **excluded, size_t nexcluded)
 {
     struct hd_buf cmd;
     unsigned long errors = c->n[ST_ERR_SRC] + c->n[ST_ERR_DST];
     int i;
 
-    printf("results: %s\n", abs_results);
+    printf("results: %s\n", results);
     for (i = 0; i < 2; i++)
-        printf("%s: %lu files, %lu ignored\n", sides[i].name, sides[i].tree.entries,
-               sides[i].tree.ignored);
+        printf("%s: %lu file%s, %lu ignored\n", sides[i].name, sides[i].tree.entries,
+               hd_plural(sides[i].tree.entries), sides[i].tree.ignored);
     print_counts(c, 1);
     buf_init(&cmd);
-    suggest_command(&cmd, c, sides[0].abs_root, sides[1].abs_root, o->one_fs, excluded,
+    suggest_command(&cmd, c, sides[0].root, sides[1].root, o->one_fs, excluded,
                     nexcluded);
     if (cmd.len > 0) {
         printf("suggested command (review it first%s):\n%s\n",
@@ -551,16 +533,19 @@ static int finish_tree_stage(const struct hd_counts *c, const char *abs_results,
           "tree-diff.txt,\nfix the differences (for example with the suggested rsync "
           "command) and run hashdiff\nagain.\n", stderr);
     if (errors > 0)
-        fprintf(stderr, "hashdiff: %lu paths could not be read (see ERR-SRC / ERR-DST in "
-                "tree-diff.txt);\nfix their permissions and run hashdiff again.\n", errors);
+        fprintf(stderr, "hashdiff: %lu path%s could not be read (see ERR-SRC / ERR-DST in "
+                "tree-diff.txt);\nfix their permissions and run hashdiff again.\n", errors,
+                hd_plural(errors));
     if (c->n[ST_EXTRA] > 0)
-        fprintf(stderr, "hashdiff: warning: %lu files exist only in DESTINATION; the "
-                "suggested command uses\n--delete-after and will delete them. Review "
-                "tree-diff.txt before running it.\n", c->n[ST_EXTRA]);
+        fprintf(stderr, "hashdiff: warning: %lu file%s exist%s only in DESTINATION; the "
+                "suggested command uses\n--delete-after and will delete %s. Review "
+                "tree-diff.txt before running it.\n", c->n[ST_EXTRA],
+                hd_plural(c->n[ST_EXTRA]), c->n[ST_EXTRA] == 1 ? "s" : "",
+                c->n[ST_EXTRA] == 1 ? "it" : "them");
     return 4;
 }
 
-static int finish_hash_stage(const struct hd_counts *c, const char *abs_results,
+static int finish_hash_stage(const struct hd_counts *c, const char *results,
                              const struct hd_buf *cmd, time_t started, int fast)
 {
     char a[HD_OFF_DEC_LEN + 8];
@@ -569,18 +554,19 @@ static int finish_hash_stage(const struct hd_counts *c, const char *abs_results,
     unsigned long errors = sides[0].hashes.errors + sides[1].hashes.errors;
     int i;
 
-    printf("results: %s\n", abs_results);
+    printf("results: %s\n", results);
     for (i = 0; i < 2; i++)
-        printf("%s: %lu files, %s read, %lu ignored\n", sides[i].name,
-               sides[i].hashes.entries, hd_human_bytes(sides[i].hashes.bytes_read, a),
-               sides[i].tree.ignored);
+        printf("%s: %lu file%s, %s read, %lu ignored\n", sides[i].name,
+               sides[i].hashes.entries, hd_plural(sides[i].hashes.entries),
+               hd_human_bytes(sides[i].hashes.bytes_read, a), sides[i].tree.ignored);
     if (resuming) {
         static const char *const checks[] = { "no kept entries", "last kept entry verified",
                                               "last kept entry re-hashed" };
 
         for (i = 0; i < 2; i++)
-            printf("resume %s: %lu entries reused, %s\n", sides[i].name,
-                   sides[i].hashes.reused, checks[sides[i].hashes.last_check]);
+            printf("resume %s: %lu %s reused, %s\n", sides[i].name, sides[i].hashes.reused,
+                   sides[i].hashes.reused == 1 ? "entry" : "entries",
+                   checks[sides[i].hashes.last_check]);
     }
     if (elapsed > 0) {
         off_t tenths = total / ((off_t)elapsed * 100000);
@@ -588,7 +574,7 @@ static int finish_hash_stage(const struct hd_counts *c, const char *abs_results,
         printf("elapsed: %ld s, %ld.%d MB/s\n", elapsed, (long)(tenths / 10),
                (int)(tenths % 10));
     } else {
-        printf("elapsed: 0 s\n");
+        printf("elapsed: 0 s, - MB/s\n");
     }
     if (fast)
         print_fast_metrics();
@@ -596,11 +582,16 @@ static int finish_hash_stage(const struct hd_counts *c, const char *abs_results,
         printf("no differences: ORIGIN and DESTINATION match\n");
     else
         print_counts(c, 0);
-    if (cmd->len > 0)
+    if (cmd->len > 0) {
         printf("%s\n", cmd->data);
+        printf("NOTE: the command above copies with rsync only the files whose content did "
+               "not match.\n      There is a copy of it in "
+               "results.hashdiff/rsync-command.txt\n");
+    }
     if (c->n[ST_EXTRA] > 0)
-        hd_warn("%lu files exist only in DESTINATION: a tree changed during the run",
-                c->n[ST_EXTRA]);
+        hd_warn("%lu file%s exist%s only in DESTINATION: a tree changed during the run",
+                c->n[ST_EXTRA], hd_plural(c->n[ST_EXTRA]),
+                c->n[ST_EXTRA] == 1 ? "s" : "");
     if (errors > 0 || c->n[ST_ERR_SRC] > 0 || c->n[ST_ERR_DST] > 0)
         return 3;
     return counts_total(c) > 0 ? 1 : 0;
@@ -614,7 +605,7 @@ int main(int argc, char **argv)
     struct hd_buf cmd, mode;
     char **excluded = NULL;
     size_t nexcluded = 0, k;
-    char *results, *abs_results;
+    char *results;
     time_t started = time(NULL);
     int r = opts_parse(argc, argv, &o), i, status;
 
@@ -639,11 +630,8 @@ int main(int argc, char **argv)
     results = hd_path_join(o.output, RESULTS_NAME);
     resuming = prepare_results(results, &o);
     stat_dir("results directory", results, &sres);
-    abs_results = absolute_path(results);
-    for (i = 0; i < 2; i++) {
-        sides[i].abs_root = absolute_path(sides[i].root);
+    for (i = 0; i < 2; i++)
         sides[i].pid = 0;
-    }
     if (resuming)
         prepare_resume(results, mode.data);
 
@@ -658,7 +646,7 @@ int main(int argc, char **argv)
             receive(&sides[i], MSG_TREE, &sides[i].tree);
     memset(&counts, 0, sizeof(counts));
     if (!resuming)
-        diff_trees(results, sides[0].abs_root, sides[1].abs_root, &counts, &excluded,
+        diff_trees(results, sides[0].root, sides[1].root, &counts, &excluded,
                    &nexcluded);
     check_interrupted();
 
@@ -675,7 +663,7 @@ int main(int argc, char **argv)
             reap_child(&sides[i]);
             close_pipes(&sides[i]);
         }
-        status = finish_tree_stage(&counts, abs_results, &o, excluded, nexcluded);
+        status = finish_tree_stage(&counts, results, &o, excluded, nexcluded);
     } else {
         /* Hash stage. */
         for (i = 0; i < 2; i++) {
@@ -693,19 +681,15 @@ int main(int argc, char **argv)
             close_pipes(&sides[i]);
         }
         buf_init(&cmd);
-        diff_hashes(results, abs_results, sides[0].abs_root, sides[1].abs_root, &counts,
-                    &cmd);
+        diff_hashes(results, sides[0].root, sides[1].root, &counts, &cmd);
         check_interrupted();
-        status = finish_hash_stage(&counts, abs_results, &cmd, started, o.fast);
+        status = finish_hash_stage(&counts, results, &cmd, started, o.fast);
         buf_free(&cmd);
     }
 
     for (k = 0; k < nexcluded; k++)
         free(excluded[k]);
     free(excluded);
-    for (i = 0; i < 2; i++)
-        free(sides[i].abs_root);
-    free(abs_results);
     free(results);
     buf_free(&mode);
     opts_free(&o);

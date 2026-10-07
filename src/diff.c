@@ -444,7 +444,7 @@ static void hash_pass_fn(void *ctx, int status, const char *path)
         outfile_write(p->list, path, strlen(path) + 1);   /* raw path and its '\0' */
 }
 
-void diff_hashes(const char *results, const char *abs_results, const char *abs_origin,
+void diff_hashes(const char *results, const char *abs_origin,
                  const char *abs_destination, struct hd_counts *c, struct hd_buf *cmd)
 {
     struct hd_outfile diff, list, command;
@@ -481,7 +481,7 @@ void diff_hashes(const char *results, const char *abs_results, const char *abs_o
 
     buf_clear(cmd);
     if (counts_total(c) - c->n[ST_EXTRA] - c->n[ST_ERR_SRC] > 0) {
-        lst = hd_path_join(abs_results, "rsync-files.lst");
+        lst = hd_path_join(results, "rsync-files.lst");
         buf_append_str(cmd, "rsync -a -I --from0 --files-from=");
         hd_shell_quote(cmd, lst);
         buf_append_char(cmd, ' ');

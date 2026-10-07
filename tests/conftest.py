@@ -229,6 +229,51 @@ def read_bytes(path):
         return f.read()
 
 
+TIME_HEADERS = (b"# started:", b"# resumed:")
+
+
+def strip_time(data):
+    """Removes the lines that record wall-clock time (section 7).
+
+    Those are the "# started:" and "# resumed:" headers and the footer, which begins at the
+    "# finished:" line. Two runs over the same trees are byte-for-byte equal once they are
+    gone, which is what "identical" means in the test descriptions.
+    """
+    out = []
+    for line in data.split(b"\n"):
+        if line.startswith(b"# finished:"):
+            out.append(b"")
+            break
+        if line.startswith(TIME_HEADERS):
+            continue
+        out.append(line)
+    return b"\n".join(out)
+
+
+def snapshot_results(results):
+    """{file name: contents without the time-dependent lines} for one results.hashdiff."""
+    out = {}
+    for name in sorted(os.listdir(results)):
+        path = os.path.join(results, name)
+        if os.path.isfile(path):
+            out[name] = strip_time(read_bytes(path))
+    return out
+
+
+@pytest.fixture
+def snapshot():
+    """snapshot(results) compares two runs byte for byte, ignoring the timestamps."""
+    return snapshot_results
+
+
+def results_line(stdout):
+    """The path printed on the "results:" line of the summary, or None."""
+    for line in stdout.split(b"\n"):
+        if line.startswith(b"results: "):
+            return line[len(b"results: "):]
+    return None
+
+
 def printed_command(stdout):
     """The rsync command line printed on stdout, or None."""
     for line in stdout.split(b"\n"):
