@@ -2,6 +2,7 @@
 #include "config.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -122,72 +123,96 @@ void hash_entry(struct hd_hasher *h, const char *path, const struct hd_entry *e,
     }
 }
 
-static void journal_fail(struct hd_journal *j)
+void stats_init(struct hd_stats *st)
 {
-    hd_die("cannot write '%s': %s", j->tmp, strerror(errno));
+    st->entries = 0;
+    st->full = 0;
+    st->sampled = 0;
+    st->links = 0;
+    st->errors = 0;
+    st->ignored = 0;
+    st->bytes_read = 0;
+    st->samples = 0;
+    st->sample_bytes = 0;
+    st->sampled_total = 0;
 }
 
-static void journal_put(struct hd_journal *j, const struct hd_buf *b)
-{
-    if (b->len > 0 && fwrite(b->data, 1, b->len, j->f) != b->len)
-        journal_fail(j);
-}
-
-void journal_open(struct hd_journal *j, const char *dir, const char *name,
-                  const char *abs_root, const char *mode_line)
-{
-    j->path = hd_path_join(dir, name);
-    j->tmp = xmalloc(strlen(j->path) + 5);
-    strcpy(j->tmp, j->path);
-    strcat(j->tmp, ".tmp");
-    buf_init(&j->line);
-    j->f = fopen(j->tmp, "wb");
-    if (j->f == NULL)
-        journal_fail(j);
-    buf_append_str(&j->line, "# hashdiff-format: 2\n# root: ");
-    hd_escape(&j->line, abs_root);
-    buf_append_str(&j->line, "\n# mode: ");
-    buf_append_str(&j->line, mode_line);
-    buf_append_char(&j->line, '\n');
-    journal_put(j, &j->line);
-}
-
-void journal_write(struct hd_journal *j, const char *path, const struct hd_result *r)
+static void format_line(struct hd_buf *b, const char *path, const struct hd_result *r)
 {
     char num[HD_OFF_DEC_LEN];
 
-    buf_clear(&j->line);
-    buf_append_char(&j->line, r->type);
-    buf_append_char(&j->line, ' ');
+    buf_clear(b);
+    buf_append_char(b, r->type);
+    buf_append_char(b, ' ');
     if (r->type == RES_ERROR) {
-        buf_append_str(&j->line, hd_off_to_dec((off_t)r->err, num));
-        buf_append_str(&j->line, " -");
+        buf_append_str(b, hd_off_to_dec((off_t)r->err, num));
+        buf_append_str(b, " -");
     } else {
         char hex[33];
 
         md5_hex(r->md5, hex);
-        buf_append(&j->line, hex, 32);
-        buf_append_char(&j->line, ' ');
-        buf_append_str(&j->line, hd_off_to_dec(r->size, num));
+        buf_append(b, hex, 32);
+        buf_append_char(b, ' ');
+        buf_append_str(b, hd_off_to_dec(r->size, num));
     }
-    buf_append_char(&j->line, ' ');
-    hd_escape(&j->line, path);
-    buf_append_char(&j->line, '\n');
-    journal_put(j, &j->line);
+    buf_append_char(b, ' ');
+    hd_escape(b, path);
+    buf_append_char(b, '\n');
 }
 
-void journal_commit(struct hd_journal *j)
+static void count_result(struct hd_stats *st, const struct hd_result *r)
 {
-    if (fflush(j->f) != 0)
-        journal_fail(j);
-    if (fclose(j->f) != 0) {
-        j->f = NULL;
-        journal_fail(j);
+    st->entries++;
+    switch (r->type) {
+    case RES_FULL:
+        st->full++;
+        break;
+    case RES_SAMPLED:
+        st->sampled++;
+        break;
+    case RES_LINK:
+        st->links++;
+        break;
+    default:
+        st->errors++;
+        break;
     }
-    j->f = NULL;
-    if (os_rename(j->tmp, j->path) != 0)
-        hd_die("cannot rename '%s' to '%s': %s", j->tmp, j->path, strerror(errno));
-    free(j->path);
-    free(j->tmp);
-    buf_free(&j->line);
+}
+
+void hash_list(const char *root, const struct hd_list *l, const char *results,
+               const char *side, const char *abs_root, const char *mode_line,
+               struct hd_stats *st)
+{
+    struct hd_outfile out;
+    struct hd_hasher h;
+    struct hd_buf line;
+    char name[64];
+    size_t i;
+
+    sprintf(name, "hashes-%s.txt", side);
+    outfile_open(&out, results, name);
+    buf_init(&line);
+    buf_append_str(&line, "# hashdiff-format: 2\n# root: ");
+    hd_escape(&line, abs_root);
+    buf_append_str(&line, "\n# mode: ");
+    buf_append_str(&line, mode_line);
+    buf_append_char(&line, '\n');
+    outfile_write(&out, line.data, line.len);
+    hasher_init(&h);
+    for (i = 0; i < l->count; i++) {
+        const struct hd_entry *e = &l->items[i];
+        char *path = hd_path_join(root, e->path);
+        struct hd_result r;
+
+        hash_entry(&h, path, e, &r);
+        free(path);
+        count_result(st, &r);
+        format_line(&line, e->path, &r);
+        outfile_write(&out, line.data, line.len);
+    }
+    st->bytes_read += h.bytes_read;
+    st->ignored = l->ignored;
+    hasher_free(&h);
+    buf_free(&line);
+    outfile_commit(&out);
 }

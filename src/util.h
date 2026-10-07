@@ -3,6 +3,7 @@
 #define HD_UTIL_H
 
 #include <stddef.h>
+#include <stdio.h>
 #include <sys/types.h>
 
 /* Largest off_t value; off_t is signed and at least 64 bits (config.h). */
@@ -62,6 +63,38 @@ char *hd_off_to_dec(off_t v, char *buf);
 int hd_dec_to_off(const char *s, size_t n, off_t *out);
 int hd_off_add(off_t a, off_t b, off_t *r);
 int hd_off_mul(off_t a, off_t b, off_t *r);
+
+/* "12.4 GiB": one decimal, integer arithmetic only; buf has HD_OFF_DEC_LEN + 8 bytes. */
+char *hd_human_bytes(off_t v, char *buf);
+
+/* Buffered reader of LF-terminated lines of any length. */
+struct hd_reader {
+    FILE *f;
+    char *buf;
+    size_t pos;
+    size_t end;
+    int eof;
+    struct hd_buf line;         /* current line, without the LF */
+    int complete;               /* the current line was terminated by LF */
+};
+
+int reader_open(struct hd_reader *r, const char *path);
+/* 1: a line is in r->line; 0: end of file; -1: read error (errno set). */
+int reader_next(struct hd_reader *r);
+void reader_close(struct hd_reader *r);
+
+/* Output file written as NAME.tmp and published with rename(); errors are fatal. */
+struct hd_outfile {
+    FILE *f;
+    char *path;
+    char *tmp;
+};
+
+void outfile_open(struct hd_outfile *o, const char *dir, const char *name);
+void outfile_write(struct hd_outfile *o, const void *data, size_t n);
+void outfile_flush(struct hd_outfile *o);
+void outfile_commit(struct hd_outfile *o);
+void outfile_discard(struct hd_outfile *o);
 
 ssize_t hd_read_full(int fd, void *buf, size_t n);
 int hd_write_all(int fd, const void *buf, size_t n);

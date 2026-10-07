@@ -6,7 +6,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "os.h"
 #include "util.h"
@@ -16,7 +15,7 @@ int hd_is_child = 0;
 void hd_exit(int status)
 {
     if (hd_is_child)
-        _exit(status);
+        os_exit_now(status);
     exit(status);
 }
 
@@ -358,4 +357,142 @@ int hd_write_all(int fd, const void *buf, size_t n)
         done += (size_t)r;
     }
     return 0;
+}
+
+char *hd_human_bytes(off_t v, char *buf)
+{
+    static const char *const units[] = { "B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB" };
+    off_t whole = v, rest = 0;
+    int u = 0;
+
+    while (whole >= 1024 && u < 6) {
+        rest = whole % 1024;
+        whole /= 1024;
+        u++;
+    }
+    hd_off_to_dec(whole, buf);
+    if (u > 0) {
+        size_t n = strlen(buf);
+
+        buf[n] = '.';
+        buf[n + 1] = (char)('0' + (int)(rest * 10 / 1024));
+        buf[n + 2] = '\0';
+    }
+    strcat(buf, " ");
+    strcat(buf, units[u]);
+    return buf;
+}
+
+#define READER_BUFSIZE 65536
+
+int reader_open(struct hd_reader *r, const char *path)
+{
+    r->f = fopen(path, "rb");
+    if (r->f == NULL)
+        return -1;
+    r->buf = xmalloc(READER_BUFSIZE);
+    r->pos = 0;
+    r->end = 0;
+    r->eof = 0;
+    r->complete = 0;
+    buf_init(&r->line);
+    buf_append(&r->line, "", 0);
+    return 0;
+}
+
+int reader_next(struct hd_reader *r)
+{
+    buf_clear(&r->line);
+    for (;;) {
+        const char *nl;
+
+        if (r->pos == r->end) {
+            size_t n;
+
+            if (r->eof) {
+                r->complete = 0;
+                return r->line.len > 0 ? 1 : 0;
+            }
+            n = fread(r->buf, 1, READER_BUFSIZE, r->f);
+            if (n == 0) {
+                if (ferror(r->f))
+                    return -1;
+                r->eof = 1;
+                continue;
+            }
+            r->pos = 0;
+            r->end = n;
+        }
+        nl = memchr(r->buf + r->pos, '\n', r->end - r->pos);
+        if (nl != NULL) {
+            size_t len = (size_t)(nl - (r->buf + r->pos));
+
+            buf_append(&r->line, r->buf + r->pos, len);
+            r->pos += len + 1;
+            r->complete = 1;
+            return 1;
+        }
+        buf_append(&r->line, r->buf + r->pos, r->end - r->pos);
+        r->pos = r->end;
+    }
+}
+
+void reader_close(struct hd_reader *r)
+{
+    fclose(r->f);
+    free(r->buf);
+    buf_free(&r->line);
+}
+
+static void outfile_fail(struct hd_outfile *o)
+{
+    hd_die("cannot write '%s': %s", o->tmp, strerror(errno));
+}
+
+void outfile_open(struct hd_outfile *o, const char *dir, const char *name)
+{
+    o->path = hd_path_join(dir, name);
+    o->tmp = xmalloc(strlen(o->path) + 5);
+    strcpy(o->tmp, o->path);
+    strcat(o->tmp, ".tmp");
+    o->f = fopen(o->tmp, "wb");
+    if (o->f == NULL)
+        outfile_fail(o);
+}
+
+void outfile_write(struct hd_outfile *o, const void *data, size_t n)
+{
+    if (n > 0 && fwrite(data, 1, n, o->f) != n)
+        outfile_fail(o);
+}
+
+void outfile_flush(struct hd_outfile *o)
+{
+    if (fflush(o->f) != 0)
+        outfile_fail(o);
+}
+
+void outfile_commit(struct hd_outfile *o)
+{
+    int r;
+
+    outfile_flush(o);
+    r = fclose(o->f);
+    o->f = NULL;
+    if (r != 0)
+        outfile_fail(o);
+    if (os_rename(o->tmp, o->path) != 0)
+        hd_die("cannot rename '%s' to '%s': %s", o->tmp, o->path, strerror(errno));
+    free(o->path);
+    free(o->tmp);
+}
+
+void outfile_discard(struct hd_outfile *o)
+{
+    if (o->f != NULL)
+        fclose(o->f);
+    o->f = NULL;
+    (void)os_unlink(o->tmp);
+    free(o->path);
+    free(o->tmp);
 }

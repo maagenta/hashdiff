@@ -48,4 +48,13 @@ int os_unlink(const char *path);
 char *os_getcwd(void);   /* malloc'd; NULL with errno on failure */
 int os_isatty(int fd);
 
+int os_pipe(int fds[2]);
+/* Returns the child pid in the parent, 0 in the child, -1 on failure. */
+long os_fork(void);
+/* Waits for a child, retrying on EINTR. On success *code is the exit status, or -1 if the
+ * child was killed by a signal (then *sig is the signal number). */
+int os_wait(long pid, int *code, int *sig);
+int os_kill(long pid, int sig);
+void os_exit_now(int status);   /* _exit() */
+
 #endif

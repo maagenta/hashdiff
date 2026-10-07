@@ -50,4 +50,8 @@ void walk_tree(const char *root, const struct walk_opts *wo, struct hd_list *lis
 void list_sort(struct hd_list *list);
 void list_free(struct hd_list *list);
 
+/* Writes DIR/tree-SIDE.txt (section 3.1 of the specification) from a sorted list. */
+void tree_write(const char *results, const char *side, const char *abs_root,
+                const struct hd_list *list);
+
 #endif

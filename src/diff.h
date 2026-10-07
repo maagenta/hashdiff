@@ -1,0 +1,55 @@
+/* diff.h - merge-join of two lists, tree-diff.txt, diff-files.txt and the rsync outputs. */
+#ifndef HD_DIFF_H
+#define HD_DIFF_H
+
+#include <stddef.h>
+#include <sys/types.h>
+
+#include "util.h"
+
+/* Line formats. */
+#define FMT_TREE 1
+#define FMT_HASHES 2
+
+/* One parsed line of a tree-*.txt or hashes-*.txt file. */
+struct hd_record {
+    char type;
+    off_t num;          /* size; errno for E */
+    off_t mtime;        /* tree files only */
+    char hash[33];      /* hashes files only; empty for E */
+    struct hd_buf path; /* unescaped */
+};
+
+void record_init(struct hd_record *r);
+void record_free(struct hd_record *r);
+/* Parses one line (without its LF); returns -1 if it is not valid for the format. */
+int record_parse(int fmt, const char *line, size_t len, struct hd_record *r);
+
+/* Statuses, in the order of the counters. */
+enum hd_status {
+    ST_MISSING, ST_EXTRA, ST_SIZE, ST_TYPE, ST_HASH, ST_ERR_SRC, ST_ERR_DST, ST_COUNT
+};
+
+struct hd_counts {
+    unsigned long n[ST_COUNT];
+};
+
+const char *status_name(int status);
+unsigned long counts_total(const struct hd_counts *c);
+
+/* Tree stage: compares the tree files and writes tree-diff.txt. The directories excluded
+ * from either traversal are appended to *excluded (malloc'd strings). */
+void diff_trees(const char *results, const char *abs_origin, const char *abs_destination,
+                struct hd_counts *c, char ***excluded, size_t *nexcluded);
+
+/* Builds the suggested synchronization command of the tree stage; empty if none. */
+void suggest_command(struct hd_buf *out, const struct hd_counts *c, const char *abs_origin,
+                     const char *abs_destination, int one_fs, char **excluded,
+                     size_t nexcluded);
+
+/* Hash stage: writes diff-files.txt, rsync-files.lst and rsync-command.txt; the rsync
+ * command is also returned in *cmd (empty if there is nothing to copy). */
+void diff_hashes(const char *results, const char *abs_results, const char *abs_origin,
+                 const char *abs_destination, struct hd_counts *c, struct hd_buf *cmd);
+
+#endif

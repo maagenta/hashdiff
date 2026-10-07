@@ -207,3 +207,43 @@ def parsers():
         report = staticmethod(parse_report)
         rsync_list = staticmethod(parse_rsync_list)
     return Parsers
+
+
+@pytest.fixture
+def compare(run_hashdiff, tmp_path):
+    """compare(origin, destination, *args) runs hashdiff with --output tmp_path/out.
+
+    Returns (exit code, stdout, stderr, path of results.hashdiff).
+    """
+    outdir = os.path.join(os.fsencode(tmp_path), b"out")
+    os.makedirs(outdir, exist_ok=True)
+
+    def run(origin, destination, *args, **kwargs):
+        code, out, err = run_hashdiff(origin, destination, "--output", outdir, *args, **kwargs)
+        return code, out, err, os.path.join(outdir, b"results.hashdiff")
+    return run
+
+
+def read_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def printed_command(stdout):
+    """The rsync command line printed on stdout, or None."""
+    for line in stdout.split(b"\n"):
+        if line.startswith(b"rsync "):
+            return line
+    return None
+
+
+def run_command_line(line):
+    """Runs a printed command without a shell: shlex.split on the bytes as a str."""
+    import shlex
+    args = [os.fsencode(a) for a in shlex.split(os.fsdecode(line))]
+    return subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def skip_if_root():
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("running as root: permissions are not enforced")

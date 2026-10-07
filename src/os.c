@@ -7,7 +7,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "os.h"
@@ -179,4 +181,41 @@ char *os_getcwd(void)
 int os_isatty(int fd)
 {
     return isatty(fd);
+}
+
+int os_pipe(int fds[2])
+{
+    return pipe(fds);
+}
+
+long os_fork(void)
+{
+    return (long)fork();
+}
+
+int os_wait(long pid, int *code, int *sig)
+{
+    int status;
+
+    while (waitpid((pid_t)pid, &status, 0) < 0)
+        if (errno != EINTR)
+            return -1;
+    if (WIFEXITED(status)) {
+        *code = WEXITSTATUS(status);
+        *sig = 0;
+    } else {
+        *code = -1;
+        *sig = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
+    }
+    return 0;
+}
+
+int os_kill(long pid, int sig)
+{
+    return kill((pid_t)pid, sig);
+}
+
+void os_exit_now(int status)
+{
+    _exit(status);
 }

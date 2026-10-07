@@ -2,6 +2,7 @@
 #include "config.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -179,4 +180,47 @@ void list_free(struct hd_list *l)
     free((void *)l->excluded);
     arena_free(&l->arena);
     list_init(l);
+}
+
+void tree_write(const char *results, const char *side, const char *abs_root,
+                const struct hd_list *l)
+{
+    struct hd_outfile out;
+    struct hd_buf b;
+    char name[64], num[HD_OFF_DEC_LEN];
+    size_t i;
+
+    sprintf(name, "tree-%s.txt", side);
+    outfile_open(&out, results, name);
+    buf_init(&b);
+    buf_append_str(&b, "# hashdiff-tree: 1\n# root: ");
+    hd_escape(&b, abs_root);
+    buf_append_char(&b, '\n');
+    for (i = 0; i < l->nexcluded; i++) {
+        buf_append_str(&b, "# excluded: ");
+        hd_escape(&b, l->excluded[i]);
+        buf_append_char(&b, '\n');
+    }
+    outfile_write(&out, b.data, b.len);
+    for (i = 0; i < l->count; i++) {
+        const struct hd_entry *e = &l->items[i];
+
+        buf_clear(&b);
+        buf_append_char(&b, e->type);
+        buf_append_char(&b, ' ');
+        if (e->type == ENT_ERROR) {
+            buf_append_str(&b, hd_off_to_dec((off_t)e->err, num));
+            buf_append_str(&b, " -");
+        } else {
+            buf_append_str(&b, hd_off_to_dec(e->size, num));
+            buf_append_char(&b, ' ');
+            buf_append_str(&b, hd_off_to_dec(e->mtime, num));
+        }
+        buf_append_char(&b, ' ');
+        hd_escape(&b, e->path);
+        buf_append_char(&b, '\n');
+        outfile_write(&out, b.data, b.len);
+    }
+    buf_free(&b);
+    outfile_commit(&out);
 }

@@ -137,10 +137,14 @@ No file content is read in this stage.
 
     # hashdiff-tree: 1
     # root: /abs/path/origin
+    # excluded: backups/results.hashdiff
     F 1048576 1728212345 docs/report.pdf
     L 11 1728212345 lib/libfoo.so
     E 13 - private
 
+- Header: `# hashdiff-tree: 1`, `# root:` (escaped, absolute) and one `# excluded:` line
+  (escaped path relative to the root) per directory excluded from the traversal (section 3),
+  used for the `--exclude` options of the suggested command.
 - Fields separated by a single space: type (F = regular file, L = symlink, E = error);
   size (lstat st_size; for L, the length of the link target; for E, the errno in decimal);
   mtime (st_mtime in decimal seconds, possibly negative, converted through off_t with the
