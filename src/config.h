@@ -11,6 +11,6 @@
 /* C89 static assert: sizes and offsets of files > 4 GiB must fit in off_t. */
 typedef char hd_off_t_is_64bit[sizeof(off_t) >= 8 ? 1 : -1];
 
-#define HD_VERSION "1.0"
+#define HD_VERSION "1.1"
 
 #endif

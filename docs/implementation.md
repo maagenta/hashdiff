@@ -52,7 +52,7 @@ implementing. Do not add functionality not described here.
     -x, --one-file-system   Do not cross mount points (st_dev different from the root's)
     -q, --quiet             No progress on stderr
     -h, --help
-    -V, --version           Print "hashdiff 1.0" and exit 0
+    -V, --version           Print "hashdiff 1.1" and exit 0
 
 - SIZE: integer with optional K, M, G or T suffix (base 1024, case-insensitive), with
   overflow detection. --gap >= 1; --block >= 512. Accepted forms: `--opt VALUE`,

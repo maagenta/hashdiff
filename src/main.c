@@ -592,7 +592,10 @@ static int finish_hash_stage(const struct hd_counts *c, const char *abs_results,
     }
     if (fast)
         print_fast_metrics();
-    print_counts(c, 0);
+    if (counts_total(c) == 0)
+        printf("no differences: ORIGIN and DESTINATION match\n");
+    else
+        print_counts(c, 0);
     if (cmd->len > 0)
         printf("%s\n", cmd->data);
     if (c->n[ST_EXTRA] > 0)
