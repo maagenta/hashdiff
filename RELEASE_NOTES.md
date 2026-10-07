@@ -43,12 +43,14 @@ section 11 and its phase in section 12, and each one says which section holds it
 **For these, the specification is what counts**; this list is kept for the intent behind each
 item and for the record of what was decided. The **Decide** points were resolved in the spec
 with the recommendation written under each one, so that is the place to argue with any of them.
-Phases 9 to 15 cover the lot, and no line of code exists for any of it yet.
+Phases 9 to 16 cover the lot, and no line of code exists for any of it yet.
 
 Scope is open: items 1 to 3 and 9 are small and self-contained and would fit in v1.1, items 4
 to 6 change the on-disk formats and have to land together with one format bump, and 7 and 8
 are the two features. Item 7 renames every per-destination file, so anything that touches those
-names is cheaper after it: consider doing it first even though it is the largest.
+names is cheaper after it: consider doing it first even though it is the largest. Item 10
+depends on nothing and could land anywhere, but the lock it describes is what keeps two runs
+from corrupting one directory, which argues for having it early.
 
 ### 1. Relative paths in ORIGIN, DESTINATION and --output
 
@@ -453,15 +455,9 @@ With `--file`, ORIGIN and the destinations are regular files instead of director
   stores it inside `diff-files.txt`, where a parser then has to handle both. Printing
   `elapsed: 0 s, - MB/s` keeps one shape.
 
-## Backlog
-
-Not in `docs/implementation.md` yet: the intent and a recommendation, with nothing settled. An
-item moves up to **Specified** once its **Decide** points are answered and it has a section,
-its tests and a phase in the spec. Item 10 depends on nothing and could land anywhere, but the
-lock it describes is what keeps two runs from corrupting one directory, which argues for having
-it early.
-
 ### 10. Refuse to touch a results.hashdiff that another run is using
+
+*Specified in section 3.6; phase 15.*
 
 The worst case this prevents is real and silent: two hashdiff runs on one results.hashdiff
 append to the same journal, and what is left is a file that is not a canonical prefix of
@@ -509,6 +505,12 @@ Tests: a helper process holds `fcntl.lockf` on `results.hashdiff/lock`; hashdiff
 message with that pid, exits 2 without a terminal and proceeds with `--ignore-lock`. The helper
 killed with `SIGKILL` leaves no lock and the next run takes it without asking. Two hashdiffs
 started at once on a fresh directory: the second one stops.
+
+## Backlog
+
+Nothing here right now: everything asked for so far is specified. An item lands here when it
+is still an intent, and moves up to **Specified** once its **Decide** points are answered and
+it has a section, its tests and a phase in `docs/implementation.md`.
 
 ## v1.0
 

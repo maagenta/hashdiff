@@ -12,9 +12,10 @@ implementing. Do not add functionality not described here.
 - Zero third-party dependencies. The only external interface is the system libc (C89) +
   POSIX/SUSv3: opendir/readdir/closedir, lstat/stat/fstat, readlink,
   open/read/pread/write/close, mkdir, rename, unlink, pipe, fork/waitpid/_exit, kill,
-  sigaction, getcwd, isatty, time, localtime, strftime, posix_fadvise (under #ifdef).
-  `stat` only for the roots, which are followed (sections 2.2 and 2.3); `localtime` and
-  `strftime`, both C89, only for the timestamp lines of section 8.
+  sigaction, fcntl, getcwd, isatty, time, localtime, strftime, posix_fadvise (under #ifdef).
+  `stat` only for the roots, which are followed (sections 2.2 and 2.3); `fcntl` only for the
+  lock of section 3.6, with F_SETLK and F_GETLK; `localtime` and `strftime`, both C89, only
+  for the timestamp lines of section 8.
 - Feature-test macros only in the Makefile, identical across all translation units:
   `-D_XOPEN_SOURCE=600 -D_FILE_OFFSET_BITS=64`. `src/config.h` is included first in every
   .c file, emits `#error` if `_FILE_OFFSET_BITS != 64`, and contains a C89 static assert:
@@ -46,6 +47,7 @@ implementing. Do not add functionality not described here.
         --force             If results.hashdiff exists, discard it and start over without asking
         --recheck           If results.hashdiff holds a finished run with differences, archive
                             it and read only the paths that differed (section 3.5)
+        --ignore-lock       Do not refuse when another run holds the lock (section 3.6)
     -f, --fast              Sampled fast mode (section 6). Without it: full MD5 of everything
     -g, --gap SIZE          Maximum unread region between two samples (default: 64M).
                             Any contiguous damage larger than SIZE is always detected
@@ -75,8 +77,8 @@ implementing. Do not add functionality not described here.
 - -x with --file, and --jobs > 1 with --file: warning on stderr that they have no effect
   (nothing is traversed, and a side has a single entry).
 - Exit codes, in decreasing order of precedence: 2 fatal error (including "abort" at the
-  prompt of section 3.3 and trees changed on resume, section 3.4); 4 the tree of at least
-  one destination differs from ORIGIN, so that destination was not hashed (section 3.1);
+  prompts of sections 3.3 and 3.6 and trees changed on resume, section 3.4); 4 the tree of at
+  least one destination differs from ORIGIN, so that destination was not hashed (section 3.1);
   3 completed, but some side had read errors (E entries); 1 differences found; 0 no
   differences. A run reports the most severe status over every destination, so errors and
   differences together are 3, and one destination whose tree differs while another has hash
@@ -189,9 +191,17 @@ large file, a disk image or an archive, verified against its copies.
 
 ## 3. Results directory
 
-`DIR/results.hashdiff/` is created with `mkdir(path, 0777)` (umask applies). File names are
-fixed; --output only chooses DIR. A run has two stages: the tree stage (section 3.1) always
-runs; the hash stage (sections 5-9) runs for every destination whose tree matches ORIGIN.
+`DIR/results.hashdiff/` is created with `mkdir(path, 0777)` (umask applies); EEXIST is not an
+error, it is the case of section 3.3. File names are fixed; --output only chooses DIR. A run
+has two stages: the tree stage (section 3.1) always runs; the hash stage (sections 5-9) runs
+for every destination whose tree matches ORIGIN.
+
+The order of what the parent does to this directory matters and is fixed: create it or find
+it, take the lock (section 3.6), decide what to do with what is already there (sections 3.3
+and 3.5), write paths.txt and history.txt (section 3.2), and only then fork (section 7). The
+lock comes before the decision because the decision itself writes: two runs starting at the
+same moment on one directory would otherwise both conclude that there is nothing to resume and
+both clean it.
 
 SIDE below is a side name of section 2.2 (`origin`, `destination` or `destination-N`) and
 DEST is the name of a destination. The `-DEST` part is present only when there are several
@@ -201,6 +211,7 @@ destinations: with one, the four files of the comparison are `tree-diff.txt`,
     file                       written by                content
     paths.txt                  tree stage                roots of the run (section 3.2)
     history.txt                tree stage                one block per run, ever (section 3.2)
+    lock                       start of the run          empty; the lock of section 3.6
     tree-SIDE.txt              tree stage                list of that side (section 3.1)
     tree-diff-DEST.txt         tree stage                ORIGIN vs DEST (section 3.1)
     hashes-SIDE.txt            hash stage                hash list of that side (section 8)
@@ -463,10 +474,10 @@ opendir/readdir and unlink every entry that is a regular file whose name is `pat
 `tree-destination`, `hashes-destination`, `tree-diff`, `diff-files`, `rsync-files` or
 `rsync-command`, in every case with or without a `.tmp`, `.new` or `.part` suffix. The
 matching is strncmp and strcmp on prefixes and suffixes, not a glob library. Everything else
-is left untouched, which includes `history.txt` (section 3.2), which is never deleted, and the
-`scan-*` archives of section 3.5: --force never deletes them and nothing in hashdiff ever
-prunes them (say so in the README). A directory left by a
-run with more destinations than this one therefore keeps none of its result files, which is
+is left untouched, which includes `history.txt` (section 3.2) and `lock` (section 3.6), which
+are never deleted, and the `scan-*` archives of section 3.5: --force never deletes them and
+nothing in hashdiff ever prunes them (say so in the README). A directory left by a run with
+more destinations than this one therefore keeps none of its result files, which is
 the point: a stale `hashes-destination-3.txt` would look like part of the new result.
 
 ### 3.4 Resuming an interrupted run
@@ -574,7 +585,7 @@ handful of files is waste.
    the previous run's paths.txt formatted as `%Y%m%d%H%M`, which sorts chronologically, unlike
    the dd/mm/yyyy of section 8. If that name exists, append `-2`, `-3`, ... until one is free.
    Move into it, with `rename()`, every file that section 3.3 would clean, which leaves
-   `history.txt` where it is (section 3.2); `rename()` inside
+   `history.txt` and `lock` where they are (sections 3.2 and 3.6); `rename()` inside
    one directory is atomic and free, while a copy is neither: a hashes file holds about sixty
    bytes per entry, so a few million files make hundreds of megabytes. Existing `scan-*`
    directories are never moved.
@@ -609,6 +620,64 @@ handful of files is waste.
    (section 9). Exit 0 means that those paths match now and never that the trees match; say
    it in the README next to the exit codes.
 7. The archives are never pruned and --force keeps them (section 3.3).
+
+### 3.6 One run at a time in one results.hashdiff
+
+Two runs writing one results.hashdiff append to the same journal, and what is left is a file
+that is not a canonical prefix of anything and that the resume of section 3.4 then trusts and
+reuses. An advisory lock prevents it, in POSIX and nothing else.
+
+- `DIR/results.hashdiff/lock`, opened once with `open(O_RDWR | O_CREAT, 0666)` right after the
+  directory exists and before anything reads or writes in it (section 3), and kept open until
+  the process ends.
+- The lock is taken with `fcntl(F_SETLK)` and a `struct flock` of `l_type = F_WRLCK`,
+  `l_whence = SEEK_SET`, `l_start = 0`, `l_len = 0`, so it covers the whole file now and
+  however it grows. Retry on EINTR.
+- The kernel releases it when the process ends, through any exit path: a normal return, a
+  `hd_die`, a signal, a `kill -9` or a power loss. There is nothing to clean up and no stale
+  lock to reason about, which is the whole reason for using `fcntl` instead of the presence of
+  a file.
+- The file stays empty. Writing the pid into it would be a second source of truth that goes
+  stale exactly when it matters, while `l_pid` below cannot.
+- `lock` is never unlinked, never renamed and never moved: not by the cleaning of section 3.3,
+  not by --force, not into a `scan-*` archive by section 3.5. Unlinking it would not release
+  anything, but the next run would create a new file, and two runs each holding a lock on a
+  different inode exclude nobody.
+- EACCES or EAGAIN means another run holds it. `fcntl(F_GETLK)` with the same structure fills
+  it in with `l_pid`, the pid of the holder. If F_GETLK comes back with `l_type == F_UNLCK`
+  the holder released it in between: retry F_SETLK exactly once, and carry on if it succeeds.
+  Otherwise, if stdin and stderr are both terminals (isatty), ask on stderr, also with -q:
+
+      results.hashdiff in DIR is in use by process 48213.
+      continue anyway? [y]es or [a]bort?
+
+  Read one line from stdin with read() on fd 0, as in section 3.3: `y` or `yes` continues, `a`
+  or `abort` exits 2, any other answer repeats the question, EOF exits 2. Over NFS `l_pid` is
+  a pid on another machine and means nothing locally, so when the lock file is not on a local
+  filesystem the first line is `results.hashdiff in DIR is in use by another run.` without a
+  number.
+- Without a terminal: fatal error (exit 2) whose message names --ignore-lock.
+- --ignore-lock only suppresses that refusal. The run still takes the lock when it is free, so
+  a third run still sees one, and the flag is deliberately not --force: --force means "discard
+  these results", and the user who wants to discard them is precisely the one who must not do
+  it while another run is writing them.
+- Any other error from F_SETLK, ENOLCK and EINVAL among them, means that this filesystem does
+  not do locking, not that the directory is busy. Warning on stderr and the run continues:
+  `hashdiff: warning: cannot lock '<path>': <strerror>; another run on the same
+  results.hashdiff would not be noticed.`
+- The lock belongs to the parent. The children inherit the descriptor but hold nothing, so a
+  child closing it releases nothing, and the parent outlives every child by design. The parent
+  must never close that descriptor and must never open the lock file a second time: POSIX
+  drops every lock a process holds on a file as soon as that process closes any descriptor to
+  it.
+- What the lock does not cover, for the README: only runs that take it are seen, so an editor
+  holding `diff-files.txt` open, a `cp` copying the directory or a hashdiff older than this
+  version is invisible; and `fcntl` locks over NFS depend on the server's lock manager and may
+  be ignored without saying so, so on a network filesystem the lock is not a guarantee. It
+  covers results.hashdiff and never ORIGIN or the destinations, where the rule of the README
+  stands unchanged: do not run rsync on the trees while hashdiff is running.
+- A run that aborts at this prompt may leave behind the empty directory and the empty lock
+  file it created a moment earlier. Both are empty and the next run reuses them.
 
 ## 4. Traversal
 
@@ -717,9 +786,10 @@ Read execution (does not change the hash):
 
 ## 7. Parallelism (fork, no threads)
 
-- The main process validates, handles an existing results.hashdiff (sections 3.3 and 3.5),
-  creates results.hashdiff, writes paths.txt (section 3.2), calls `fflush(NULL)` and uses
-  `fork()` to launch one child per side (section 2.2), so 1 + D children: each one writes
+- The main process validates, creates or finds results.hashdiff, takes its lock
+  (section 3.6), handles what is already there (sections 3.3 and 3.5), writes paths.txt and
+  history.txt (section 3.2), calls `fflush(NULL)` and uses `fork()` to launch one child per
+  side (section 2.2), so 1 + D children: each one writes
   `tree-SIDE.txt` and `hashes-SIDE.txt` and nothing else. Each child gets two `pipe()`s:
   child → parent (tree stage result and final statistics) and parent → child (one byte:
   continue to the hash stage, or exit). The parent waits for the children with `waitpid`,
@@ -873,9 +943,10 @@ writing its own three files (section 3).
     marker, the `# recheck:` line when there is one (section 3.5), and then the lines of the
     summary below that concern this destination, in the same order and with the same text: the
     ORIGIN line, this destination's line, `elapsed:`, the fast-mode metrics and this
-    destination's counts, never the `results:` line and never a command. `# origin:` and `# destination:`
-    therefore appear twice in the file, as a root in the header and as a count in the footer;
-    `# finished:` is what tells the two apart, which works even when there are no records.
+    destination's counts, never the `results:` line and never a command. `# origin:` and
+    `# destination:` therefore appear twice in the file, as a root in the header and as a
+    count in the footer; `# finished:` is what tells the two apart, which works even when
+    there are no records.
 - The rsync-files file: raw path terminated by `\0` for MISSING, SIZE, HASH, TYPE and ERR-DST
   (EXTRA and ERR-SRC are not transferred). Always created, empty if there is nothing to
   transfer, and not created at all with --file (section 2.3). EXTRA paths (a file created in
@@ -1182,6 +1253,17 @@ test_formats.py:
     `elapsed: 0 s, - MB/s`; the NOTE after the command, and no NOTE when there is nothing to
     copy.
 
+test_lock.py:
+39. The lock (section 3.6): a helper process opens `results.hashdiff/lock` and holds a write
+    lock on it with `fcntl.lockf`; hashdiff then prints `is in use by process <pid>` with that
+    pid, exits 2 without a terminal with a message that names --ignore-lock, exits 2 on `a` and
+    continues on `y` through a pseudo-terminal, and proceeds without asking with
+    --ignore-lock. The helper killed with SIGKILL leaves no lock and the next run takes it
+    without asking and without a warning. Two hashdiffs started at once on a fresh directory:
+    one of them finishes and the other stops. `lock` survives --force and a recheck and is
+    never moved into a `scan-*` directory. Skip the cases that need the helper, with a reason,
+    on a filesystem that does not support locking.
+
 Sanitizers:
 16. `make asan` followed by `make test` passes (the binaries under test are the ASan builds).
 
@@ -1216,11 +1298,11 @@ earlier only if marked xfail with a reason.
    how to run the tests (make test-deps, make test, HASHDIFF_SLOW_TESTS=1) and the CI
    badge. Test 16.
 
-Phases 1 to 8 are version 1.1. Phases 9 to 15 are the work of sections 2.1, 2.2, 2.3, 3.2,
-3.3, 3.5 and the parts of 3, 3.1, 7, 8 and 9 that depend on them. Their order is not the order
-in which they were asked for: phase 10 renames every per-destination file and is what makes a
-side name the key of every output, so doing it before the formats and the prompts writes them
-once instead of twice.
+Phases 1 to 8 are version 1.1. Phases 9 to 16 are the work of sections 2.1, 2.2, 2.3, 3.2,
+3.3, 3.5, 3.6 and the parts of 3, 3.1, 7, 8 and 9 that depend on them. Their order is not the
+order in which they were asked for: phase 10 renames every per-destination file and is what
+makes a side name the key of every output, so doing it before the formats and the prompts
+writes them once instead of twice.
 
 9. Path cleaning in util and its use for ORIGIN, the destinations, --output and every root,
    message and command (section 2.1); the singular of the counts and the fixed shape of
@@ -1243,7 +1325,11 @@ once instead of twice.
     (section 3.5). Test 35. README: that exit 0 after a recheck does not mean that the trees
     match, and that the archives are never pruned.
 14. --file (section 2.3). Test 29. README: usage and the limitation of resume.
-15. README and RELEASE_NOTES.md sweep. The on-disk formats of this work do not read on version
+15. The lock of section 3.6: `lock`, `fcntl(F_SETLK)` taken before anything else touches the
+    directory, the `F_GETLK` message with the holder's pid, --ignore-lock, and the warning
+    that lets a filesystem without locking through. Test 39. README: that one run at a time
+    writes a results.hashdiff, what the flag does, and the two things the lock does not see.
+16. README and RELEASE_NOTES.md sweep. The on-disk formats of this work do not read on version
     1.1 and 1.1 does not read theirs, so the release that carries it is 1.2: bump `HD_VERSION`
     in src/config.h, the `--version` line of section 2 and `test_version` in
     tests/test_cli.py together, as the checklist in RELEASE_NOTES.md says.
