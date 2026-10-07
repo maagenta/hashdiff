@@ -36,10 +36,12 @@ Until the tag exists, use the v1.0 release:
 
 ## Backlog
 
-Nothing below is implemented. An item is folded into `docs/implementation.md` (with its
-tests in section 11 and its phase in section 12) before it is written; this list only keeps
-the intent and the decisions that are still open. Every **Decide** needs an answer first;
-what follows it is a recommendation, not a decision.
+Nothing below is implemented in code. Every item has been folded into
+`docs/implementation.md`, with its tests in section 11 and its phase in section 12, and each
+one says where: **from here on the specification is what counts**, and this list is kept only
+for the intent behind each item and for the record of what was decided. Every **Decide** was
+resolved there with the recommendation written under it; the spec is the place to argue with
+any of them.
 
 Scope is open too: items 1 to 3 and 9 are small and self-contained and would fit in v1.1,
 items 4 to 6 change the on-disk formats and have to land together with one format bump, and
@@ -48,6 +50,8 @@ touches those names is cheaper after it: consider doing it first even though it 
 largest.
 
 ### 1. Relative paths in ORIGIN, DESTINATION and --output
+
+*Specified in section 2.1 of `docs/implementation.md`; phase 9.*
 
 `absolute_path()` (`src/main.c:62`) is `getcwd()` plus the path exactly as it was typed, so
 every `.` or `..` survives into each place an absolute path is printed or stored. The
@@ -91,6 +95,8 @@ and resolving them now would make every existing results directory unresumable.
 
 ### 2. Explain the rsync command at the end of a run
 
+*Specified in section 9 (the summary, item 9); phase 9.*
+
 When the hash stage found something to copy, the command is printed and then, right after
 it:
 
@@ -106,6 +112,8 @@ it:
   already prints prose there (`suggested command (review it first...)`).
 
 ### 3. The two hashes of a file that did not match
+
+*Specified in section 9 (the diff-files format); phase 11.*
 
 `diff-files.txt` holds `STATUS escaped-path` and nothing else, so finding out *how* two
 files differ means grepping both `hashes-*.txt` by hand. The diff has both records in hand
@@ -127,6 +135,8 @@ when it writes the line, so the hashes are free.
   parser in `tests/conftest.py` has to follow.
 
 ### 4. Start and finish times in the output files
+
+*Specified in sections 8, 7 and 9; phase 11.*
 
 `hashes-origin.txt` and `hashes-destination.txt` get a start line, plus a finish line when
 that side completes, and `diff-files.txt` gets a finish block with the summary of the run.
@@ -188,6 +198,8 @@ only that destination's own counts.
 
 ### 5. paths.txt
 
+*Specified in section 3.2; phase 11.*
+
 Written in the tree stage, before anything is hashed, so an interrupted run leaves it
 behind:
 
@@ -209,6 +221,8 @@ behind:
 
 ### 6. What to do when results.hashdiff already exists
 
+*Specified in sections 3.3 (the three states) and 3.5 (the recheck); phases 12 and 13.*
+
 Today: with no `hashes-*` file there is nothing to resume and the run starts over without
 asking; otherwise `--resume` resumes, `--force` starts over, a terminal is asked
 `results.hashdiff already exists in DIR: [r]esume, [o]verwrite or [a]bort?`, and without a
@@ -221,7 +235,7 @@ the item as written breaks them:
   suite. Each new choice gets its own flag, its own fatal error when stdin or stderr is not
   a tty, and a test through a pseudo-terminal like test 21.
 - **A different root can only mean "start over".** "Ask whether to continue anyway" cannot
-  be offered: lists made from another tree are not comparable, which is why section 3.2
+  be offered: lists made from another tree are not comparable, which is why section 3.4
   makes a different `# root:` fatal. In that case the choice is overwrite or abort, never
   resume.
 
@@ -237,7 +251,7 @@ with `--serial` the other side may already be published as `hashes-SIDE.txt`):
   a different origin or destination, is a fatal error that names which one changed and
   suggests `--force`. It is not a question.
 - Then ask `[r]esume, [o]verwrite or [a]bort?` as today.
-- Resuming keeps the per-side rule of section 3.2: each journal is truncated at its own last
+- Resuming keeps the per-side rule of section 3.4: each journal is truncated at its own last
   valid line and each side continues from there. **Do not** cut the side that got further
   down to the shortest one. Section 3.2 says in so many words that a side that was ahead
   loses nothing, and truncating it would throw away hours of hashing for no gain, since the
@@ -291,8 +305,13 @@ Each needs its flag; recommendation: `--recheck` for the first one. Points to se
   and rewriting it; "append, newest on top" contradicts itself, and the archive of the
   previous run already carries that run's own `paths.txt`. If `paths-old.txt` is kept
   anyway, each block needs the run's start time so blocks can be told apart.
+  (Specified as `history.txt` in section 3.2: appended, oldest first, and the one file that
+  neither `--force` nor a recheck ever removes.)
 
 ### 7. One origin against several destinations
+
+*Specified in sections 2.2, 3, 3.1, 7 and 9; phase 10, which comes first of the three big
+ones because it is what makes a side name the key of every output file and label.*
 
     hashdiff ORIGIN DEST1 [DEST2 ...]
 
@@ -394,6 +413,8 @@ Everything else this item needs:
 
 ### 8. Comparing single files (--file)
 
+*Specified in section 2.3; phase 14.*
+
 With `--file`, ORIGIN and the destinations are regular files instead of directories.
 
 - A symlink given as an argument is followed, as the roots already are. Every path must be
@@ -421,6 +442,8 @@ With `--file`, ORIGIN and the destinations are regular files instead of director
   resuming inside a single file an item of its own.
 
 ### 9. Smaller things
+
+*Specified in section 9 (the summary); phase 9.*
 
 - The summary says `1 files`. `%lu file%s` with `n == 1 ? "" : "s"` fixes it in the three
   places that print a count of files.

@@ -10,9 +10,11 @@ implementing. Do not add functionality not described here.
 - Strict ISO C89/C90. Must compile with zero warnings under both GCC and Clang using:
   `-std=c89 -pedantic-errors -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-prototypes`
 - Zero third-party dependencies. The only external interface is the system libc (C89) +
-  POSIX/SUSv3: opendir/readdir/closedir, lstat/fstat, readlink, open/read/pread/write/close,
-  mkdir, rename, unlink, pipe, fork/waitpid/_exit, kill, sigaction, getcwd, isatty, time,
-  posix_fadvise (under #ifdef).
+  POSIX/SUSv3: opendir/readdir/closedir, lstat/stat/fstat, readlink,
+  open/read/pread/write/close, mkdir, rename, unlink, pipe, fork/waitpid/_exit, kill,
+  sigaction, getcwd, isatty, time, localtime, strftime, posix_fadvise (under #ifdef).
+  `stat` only for the roots, which are followed (sections 2.2 and 2.3); `localtime` and
+  `strftime`, both C89, only for the timestamp lines of section 8.
 - Feature-test macros only in the Makefile, identical across all translation units:
   `-D_XOPEN_SOURCE=600 -D_FILE_OFFSET_BITS=64`. `src/config.h` is included first in every
   .c file, emits `#error` if `_FILE_OFFSET_BITS != 64`, and contains a C89 static assert:
@@ -35,21 +37,26 @@ implementing. Do not add functionality not described here.
 
 ## 2. CLI
 
-    hashdiff ORIGIN DESTINATION [OPTIONS]
+    hashdiff ORIGIN DESTINATION [DESTINATION ...] [OPTIONS]
 
     -o, --output DIR        Existing directory where DIR/results.hashdiff/ is created (default: .)
-        --resume            If results.hashdiff exists, resume the interrupted run without
-                            asking (section 3.2)
+        --file              ORIGIN and the destinations are files, not directories (2.3)
+        --resume            If results.hashdiff holds an interrupted run, resume it without
+                            asking (section 3.3)
         --force             If results.hashdiff exists, discard it and start over without asking
+        --recheck           If results.hashdiff holds a finished run with differences, archive
+                            it and read only the paths that differed (section 3.5)
     -f, --fast              Sampled fast mode (section 6). Without it: full MD5 of everything
     -g, --gap SIZE          Maximum unread region between two samples (default: 64M).
                             Any contiguous damage larger than SIZE is always detected
     -b, --block SIZE        Bytes read per sample (default: depends on --profile)
         --profile hdd|ssd   Disk type (default: ssd). Sets the default --block, the cost
                             model and the read strategy (section 6.1)
-    -j, --jobs N            Hashing processes per tree, 1..256 (default: 1)
-        --serial            Process ORIGIN and then DESTINATION instead of in parallel
+    -j, --jobs N            Hashing processes per side, 1..256 (default: 1)
+        --serial            Process one side at a time instead of all of them at once
     -x, --one-file-system   Do not cross mount points (st_dev different from the root's)
+        --number-of-destinations N
+                            Fail unless exactly N destinations were given (section 2.2)
     -q, --quiet             No progress on stderr
     -h, --help
     -V, --version           Print "hashdiff 1.1" and exit 0
@@ -57,83 +64,181 @@ implementing. Do not add functionality not described here.
 - SIZE: integer with optional K, M, G or T suffix (base 1024, case-insensitive), with
   overflow detection. --gap >= 1; --block >= 512. Accepted forms: `--opt VALUE`,
   `--opt=VALUE`, `-g 8M`, `-g8M`, and `--` as end of options. Custom parser.
-- Options may appear before, between or after the two paths, e.g.
+- Options may appear before, between or after the paths, e.g.
   `hashdiff /data/origin/ /data/destination/ --output /data/reports`. Every argument after
-  `--` is a path. Exactly two paths are required.
-- Trailing slashes of ORIGIN and DESTINATION are removed (except for the root `/`), so
-  `/data/origin/` and `/data/origin` are the same run.
-- --resume and --force together: fatal error.
+  `--` is a path. At least two paths are required: ORIGIN and one destination.
+- --resume, --force and --recheck exclude each other: any two of them together is a fatal
+  error.
 - --gap, --block and --profile without --fast: warning on stderr that they have no effect.
   Full mode always uses the ssd constants for its cost estimates and never uses the hdd
   read order (section 7).
-- ORIGIN and DESTINATION must be directories; a symlink is followed only for the roots
-  themselves. Fatal error if both are the same directory (same st_dev and st_ino).
-- Exit codes: 0 no differences; 1 differences found; 2 fatal error (including "abort" at the
-  prompt of section 3 and trees changed on resume, section 3.2); 3 completed, but some side
-  had read errors (E entries); 4 the trees differ, nothing was hashed (section 3.1);
-  128 + signal number when interrupted by SIGINT or SIGTERM. Errors and differences
-  together → 3.
+- -x with --file, and --jobs > 1 with --file: warning on stderr that they have no effect
+  (nothing is traversed, and a side has a single entry).
+- Exit codes, in decreasing order of precedence: 2 fatal error (including "abort" at the
+  prompt of section 3.3 and trees changed on resume, section 3.4); 4 the tree of at least
+  one destination differs from ORIGIN, so that destination was not hashed (section 3.1);
+  3 completed, but some side had read errors (E entries); 1 differences found; 0 no
+  differences. A run reports the most severe status over every destination, so errors and
+  differences together are 3, and one destination whose tree differs while another has hash
+  differences is 4; the summary says which destination is in which state. With one
+  destination, 4 still means that nothing was hashed. An interruption by SIGINT or SIGTERM
+  exits 128 + signal number and takes precedence over all of them.
 - Test-only environment variable, not documented in --help: HASHDIFF_MERGE_GAP=SIZE
   overrides the profile's merge_gap (section 6.2).
+
+### 2.1 Paths
+
+Every path that reaches an output file, a message or a comparison is first *cleaned*, so
+that the same directory is always written the same way whatever the user typed:
+
+1. if it is not absolute, `getcwd()` and a `/` are prepended;
+2. runs of `/` are collapsed into one;
+3. `.` components are removed;
+4. a `..` component removes the component before it, and a `..` directly under the root is
+   dropped (`/..` is `/`);
+5. a trailing `/` is removed unless the result is the root `/`.
+
+The result has no `.` or `..` component, no `//` and no trailing slash. ORIGIN, every
+destination and the --output directory are cleaned once, right after parsing, and only the
+cleaned form is used afterwards: to open and traverse them, in `# root:`, `# origin:` and
+`# destination:` headers, in paths.txt (section 3.2), in the `results:` line of the summary,
+in every suggested rsync command and in every message that shows a path. What is recorded is
+therefore exactly what was read, and `hashdiff o d`, `hashdiff ./o d/` and
+`hashdiff "$PWD/o" d` are one run: byte-identical result files, and either can resume the
+other.
+
+- `..` is removed lexically, as a shell does without `-P`. When the component before it is a
+  symlink to another directory, the cleaned path names a different directory than the one the
+  kernel would reach from what was typed, and hashdiff uses the cleaned one. Document it in
+  the README: pass an absolute path if there is any doubt.
+- `realpath()` is not used and symlinks are never resolved, so a root reached through a
+  symlink keeps the name the user gave it.
+
+### 2.2 Destinations
+
+- One ORIGIN and 1 to 64 destinations. Each destination is compared with ORIGIN and never
+  with another destination. ORIGIN is traversed and hashed once and its lists are reused for
+  every comparison, so one more destination costs one more traversal and one more hash of
+  that destination only.
+- A *side* is ORIGIN or one destination. Side names are the keys of every output file name,
+  summary label, progress tag and paths.txt line:
+
+      destinations    side names
+      1               origin, destination
+      2 or more       origin, destination-1, destination-2, ... in command-line order
+
+  With one destination every name is the one version 1.1 used, so a single-destination run
+  writes exactly the files it wrote before.
+- ORIGIN and every destination must be directories (regular files with --file, section 2.3);
+  a symlink is followed only for the roots themselves. Every two roots must be different
+  directories (st_dev and st_ino): ORIGIN against each destination, and each destination
+  against the others. Otherwise a fatal error that names the two roles.
+- If a root is inside another, or results.hashdiff is inside a root, that directory is
+  excluded from the traversal that contains it, with a warning on stderr (section 3). The
+  excluded paths of every side are collected together and all of them go into every suggested
+  rsync command, so a `--delete-after` command for one destination can never delete another
+  destination nested inside it.
+- --number-of-destinations N is only an assertion. It does not change how the command line is
+  parsed, because the parser knows which options take a value and the paths are unambiguous
+  without it; it is a fatal error, before anything is read, when the number of destinations
+  given is not exactly N. It is there for scripts, where a mistyped or glob-expanded path
+  would otherwise become one more destination in silence.
+- --serial processes one side at a time, in command-line order, inside each stage
+  (section 7). Without it every side runs at once: 1 + D traversals and 1 + D hashing
+  processes, each times --jobs. Warning on stderr when (1 + D) * --jobs is greater than 64,
+  for the same reason --jobs > 1 on one disk warns: more readers than the disks can serve
+  reduce throughput.
+
+### 2.3 Comparing single files (--file)
+
+With --file, ORIGIN and every destination is a regular file instead of a directory: one
+large file, a disk image or an archive, verified against its copies.
+
+- A path given as a symlink is followed, as the roots already are, so the file that is read
+  is the one reached: `stat`, not `lstat`. Any path that is not a regular file is a fatal
+  error, a directory included.
+- Nothing is traversed. A side's root is the cleaned absolute path of the file's parent
+  directory and its list holds exactly one entry, the file's name, so every format, the
+  resume and the diff work with no special case. The entry's type is F or S, never L because
+  the symlink was followed, or E when the file cannot be opened or read.
+- The two files may have different names, so the single entries are compared by position and
+  not by name. Only HASH, SIZE, ERR-SRC and ERR-DST can appear: TYPE cannot, both sides are
+  regular files, and MISSING and EXTRA cannot, each side has exactly one entry.
+  diff-files.txt records the ORIGIN entry's name, and each hashes file its own.
+- rsync-files.lst is not written: a list holding ORIGIN's name would copy it into the
+  destination's directory, which is wrong as soon as the names differ. The command of
+  section 9 is the direct form instead, with the two cleaned paths:
+
+      rsync -a -I '/data/disk.img' '/mnt/backup/disk-copy.img'
+
+  The suggested command of the tree stage is the same line without `-I`.
+- Every two files must be different files (st_dev and st_ino); their parent directories may
+  be the same one, so `hashdiff --file a.iso b.iso` is a valid run.
+- Nothing is ever excluded, because nothing is traversed, and results.hashdiff may sit in the
+  same directory as the files.
+- Resume has one entry of granularity and the last kept entry is always hashed again, so an
+  interrupted --file run reads the whole file again. Document it in the README.
+- Messages, replacing `hashdiff: ORIGIN 'X' is not a directory`:
+
+      hashdiff: ORIGIN 'X' is a file, not a directory; use --file to compare files
+      hashdiff: ORIGIN 'X' is a directory, not a file; drop --file
+
+  The first appears only when the path is a regular file or a symlink to one; a FIFO, a
+  socket or a device keeps `is not a directory`, because --file would not help. The role in
+  the message is ORIGIN, or DESTINATION with one destination and DESTINATION-N with several.
 
 ## 3. Results directory
 
 `DIR/results.hashdiff/` is created with `mkdir(path, 0777)` (umask applies). File names are
 fixed; --output only chooses DIR. A run has two stages: the tree stage (section 3.1) always
-runs; the hash stage (sections 5-9) runs only when both trees match.
+runs; the hash stage (sections 5-9) runs for every destination whose tree matches ORIGIN.
 
-    file                     written by                content
-    tree-origin.txt          tree stage                list of ORIGIN (section 3.1)
-    tree-destination.txt     tree stage                list of DESTINATION
-    tree-diff.txt            tree stage                ORIGIN vs DESTINATION (section 3.1)
-    hashes-origin.txt        hash stage                hash list of ORIGIN (section 8)
-    hashes-destination.txt   hash stage                hash list of DESTINATION
-    diff-files.txt           hash stage                content differences (section 9)
-    rsync-files.lst          hash stage                paths to copy, each ended by `\0`
-    rsync-command.txt        hash stage                rsync command that copies them
-    tree-changes.txt         resume, only on change    saved trees vs current (section 3.2)
+SIDE below is a side name of section 2.2 (`origin`, `destination` or `destination-N`) and
+DEST is the name of a destination. The `-DEST` part is present only when there are several
+destinations: with one, the four files of the comparison are `tree-diff.txt`,
+`diff-files.txt`, `rsync-files.lst` and `rsync-command.txt`.
 
-- The tree stage writes no command files; it only prints a suggested rsync command
-  (section 3.1).
-- `rsync-command.txt`: the single-line rsync command of section 9 that copies exactly the
-  paths in rsync-files.lst; empty if there is nothing to copy. The paths are not embedded in
-  the command: a list of thousands of paths would exceed the system's argument length limit
-  (ARG_MAX), and names with newlines, spaces or non-UTF-8 bytes are only safe in the
-  `\0`-terminated list.
+    file                       written by                content
+    paths.txt                  tree stage                roots of the run (section 3.2)
+    history.txt                tree stage                one block per run, ever (section 3.2)
+    tree-SIDE.txt              tree stage                list of that side (section 3.1)
+    tree-diff-DEST.txt         tree stage                ORIGIN vs DEST (section 3.1)
+    hashes-SIDE.txt            hash stage                hash list of that side (section 8)
+    diff-files-DEST.txt        hash stage                content differences (section 9)
+    rsync-files-DEST.lst       hash stage                paths to copy, each ended by `\0`
+    rsync-command-DEST.txt     hash stage                rsync command that copies them
+    tree-changes.txt           resume, only on change    saved trees vs current (section 3.4)
+    scan-YYYYMMDDHHMM/         recheck                   the archived run (section 3.5)
+
+- The tree stage writes no command files; it only prints one suggested rsync command per
+  destination whose tree differs (section 3.1).
+- `rsync-command-DEST.txt`: the single-line rsync command of section 9 that copies exactly
+  the paths in that destination's rsync-files list; empty if there is nothing to copy. The
+  paths are not embedded in the command: a list of thousands of paths would exceed the
+  system's argument length limit (ARG_MAX), and names with newlines, spaces or non-UTF-8
+  bytes are only safe in the `\0`-terminated list. With --file there is no list and the
+  command is the direct form of section 2.3.
 - hashdiff never runs any rsync command; the user reviews and runs it.
 
 Each file is written as `NAME.tmp` and published with `rename()` when complete, so a partial
 result never looks complete. Check the return value of fwrite, fflush and fclose: deferred
 write errors (ENOSPC, EIO, NFS) can surface on close. `hashes-*.txt.tmp` are journals that
-are written progressively and kept on interruption so the run can be resumed (section 3.2);
+are written progressively and kept on interruption so the run can be resumed (section 3.4);
 every other `.tmp` file is deleted on interruption.
 
-If `DIR/results.hashdiff` already exists:
+What happens when `DIR/results.hashdiff` already exists is section 3.3.
 
-- if it contains no `hashes-*.txt` and no `hashes-*.txt.tmp` (for example, the previous run
-  stopped at the tree stage), there is nothing to resume: delete the files of the table, and
-  their `.tmp`, `.new` and `.part` files, and start over without asking, even with --resume;
-- otherwise, with --force: delete those files and start over;
-- with --resume: resume (section 3.2);
-- with neither, if stdin and stderr are both terminals (isatty), ask on stderr (also with -q):
-
-      results.hashdiff already exists in DIR: [r]esume, [o]verwrite or [a]bort?
-
-  and read one line from stdin with read() on fd 0. `r` → resume; `o` → as --force;
-  `a` → exit 2 without touching anything; any other answer repeats the question; EOF →
-  exit 2;
-- with neither and no terminal (scripts, CI, tests): fatal error (exit 2) whose message
-  suggests --resume or --force.
-
-If results.hashdiff lies inside ORIGIN or DESTINATION, or one tree is nested inside the
-other, those directories are excluded from the traversal by comparing st_dev/st_ino, with a
-warning on stderr.
+If results.hashdiff lies inside a root, or one root is inside another, those directories are
+excluded from the traversal by comparing st_dev/st_ino, with a warning on stderr
+(section 2.2).
 
 ### 3.1 Tree stage
 
 Before anything is hashed, each child traverses its tree (section 4), sorts it, writes
-`tree-SIDE.txt` (SIDE is `origin` or `destination`) and waits for the parent (section 7).
-No file content is read in this stage.
+`tree-SIDE.txt` (SIDE is its side name, section 2.2) and waits for the parent (section 7).
+No file content is read in this stage. With --file nothing is traversed and the list is the
+single entry of section 2.3, but the file is written and compared in the same way. paths.txt
+(section 3.2) is already there: the parent writes it before forking (section 7).
 
     # hashdiff-tree: 1
     # root: /abs/path/origin
@@ -142,15 +247,18 @@ No file content is read in this stage.
     L 11 1728212345 lib/libfoo.so
     E 13 - private
 
-- Header: `# hashdiff-tree: 1`, `# root:` (escaped, absolute) and one `# excluded:` line
-  (escaped path relative to the root) per directory excluded from the traversal (section 3),
-  used for the `--exclude` options of the suggested command.
+- Header: `# hashdiff-tree: 1`, `# root:` (escaped, cleaned, absolute) and one
+  `# excluded:` line (escaped path relative to the root) per directory excluded from the
+  traversal (section 2.2), used for the `--exclude` options of the suggested command.
 - Fields separated by a single space: type (F = regular file, L = symlink, E = error);
-  size (lstat st_size; for L, the length of the link target; for E, the errno in decimal);
+  size (st_size from lstat, or from stat with --file; for L, the length of the link target;
+  for E, the errno in decimal);
   mtime (st_mtime in decimal seconds, possibly negative, converted through off_t with the
   util.c functions; `-` for E); and the path, escaped as in section 8. Canonical order.
-- The parent merge-joins both tree files (streaming, constant memory). First matching rule
-  wins:
+- The parent merge-joins `tree-origin.txt` with the tree file of each destination in turn,
+  re-opening `tree-origin.txt` for every one of them: one independent comparison per
+  destination, streaming, constant memory. With --file the single entry of each side is
+  compared by position instead of by path (section 2.3). First matching rule wins:
   1. E in ORIGIN → ERR-SRC
   2. Only in ORIGIN → MISSING
   3. Only in DESTINATION → EXTRA
@@ -158,22 +266,28 @@ No file content is read in this stage.
   5. F vs L → TYPE
   6. Different size → SIZE
   7. Otherwise the entries match. mtime is not compared: a copy may not keep it.
-- `tree-diff.txt` is always written; it has no entries when the trees match:
+- `tree-diff-DEST.txt` is written for every destination, always; it has no entries when that
+  destination's tree matches ORIGIN:
 
       # origin: /abs/path/origin
-      # destination: /abs/path/destination
+      # destination: /abs/path/destination-2
       ## origin
       MISSING escaped-path
       SIZE escaped-path
       ## destination
       EXTRA escaped-path
 
-  The `## origin` section holds MISSING, SIZE, TYPE and ERR-SRC (what ORIGIN has that
-  DESTINATION lacks or has differently, and read errors in ORIGIN); the `## destination`
-  section holds EXTRA and ERR-DST. Each section is in canonical order (two streaming passes).
-- No differences: the parent tells both children to start the hash stage.
-- Differences: the parent tells both children to exit and prints the summary of this stage
-  on stdout: count per status and a suggested general synchronization command, chosen as
+  The `## origin` section holds MISSING, SIZE, TYPE and ERR-SRC (what ORIGIN has that the
+  destination lacks or has differently, and read errors in ORIGIN); the `## destination`
+  section holds EXTRA and ERR-DST. The section names never carry the destination's number:
+  the file name already says which destination it is. Each section is in canonical order
+  (two streaming passes).
+- Every destination whose tree-diff has no entries goes on to the hash stage: the parent
+  tells those children to continue and tells every other destination to exit. ORIGIN
+  continues when at least one destination is left and exits when none is.
+- For every destination whose tree differs, the parent prints on stdout its count per status
+  and a suggested general synchronization command. They take their place in the summary of
+  section 9, which is printed whether anything was hashed or not. The command is chosen as
   follows:
   - EXTRA present (with or without other statuses):
     `rsync -a --delete-after EXCLUDES '<ORIGIN abs>/' '<DESTINATION abs>/'`
@@ -181,31 +295,181 @@ No file content is read in this stage.
     `rsync -a EXCLUDES '<ORIGIN abs>/' '<DESTINATION abs>/'`
   - only ERR-SRC / ERR-DST: no command.
 
-  If there is any ERR-SRC or ERR-DST (alone or with other statuses), also print on stderr:
+  With one destination the lines on stdout are the ones of version 1.1:
 
-      hashdiff: N paths could not be read (see ERR-SRC / ERR-DST in tree-diff.txt);
-      fix their permissions and run hashdiff again.
+      tree differences: 1 MISSING, 0 EXTRA, 0 SIZE, 0 TYPE, 0 ERR-SRC, 0 ERR-DST
+      suggested command (review it first):
+      rsync -a '/abs/path/origin/' '/abs/path/destination/'
 
-  The command is printed, not written to a file. `-x` is added if hashdiff ran with -x.
-  EXCLUDES is one `--exclude='/<relative path>/'` for every directory excluded from either
-  traversal (results.hashdiff and a nested tree, section 3), so `--delete-after` can never
-  delete results.hashdiff or a tree nested in DESTINATION. In the pattern, `*`, `?`, `[` and
-  `\` are escaped with `\`. Everything is quoted with POSIX quoting (`'` → `'\''`). On stderr:
+  With several, every line names its destination, the counts of all of them come first and
+  the commands after, both in command-line order:
+
+      tree differences with destination-2: 1 MISSING, 0 EXTRA, 0 SIZE, 0 TYPE, 0 ERR-SRC, 0 ERR-DST
+      suggested command for destination-2 (review it first):
+      rsync -a '/abs/path/origin/' '/abs/path/destination-2/'
+
+  `(review it first...)` gains `; --delete-after deletes the files that exist only in
+  DESTINATION` when the command carries `--delete-after`. With --file the command is the
+  direct form of section 2.3.
+
+  The commands are printed, not written to a file. `-x` is added if hashdiff ran with -x.
+  EXCLUDES is one `--exclude='/<relative path>/'` for every directory excluded from any
+  traversal of the run (results.hashdiff and any nested root, section 2.2), so
+  `--delete-after` can never delete results.hashdiff, a nested destination or a nested
+  ORIGIN. In the pattern, `*`, `?`, `[` and `\` are escaped with `\`. Everything is quoted
+  with POSIX quoting (`'` → `'\''`).
+
+  On stderr, with one destination, exactly the messages of version 1.1:
 
       hashdiff: ORIGIN and DESTINATION trees differ; nothing was hashed. See tree-diff.txt,
       fix the differences (for example with the suggested rsync command) and run hashdiff
       again.
-
-  plus, if there are EXTRA paths:
-
+      hashdiff: N paths could not be read (see ERR-SRC / ERR-DST in tree-diff.txt);
+      fix their permissions and run hashdiff again.
       hashdiff: warning: N files exist only in DESTINATION; the suggested command uses
       --delete-after and will delete them. Review tree-diff.txt before running it.
 
-  Exit 4. Unlike the command of section 9, the suggested one has no `-I`: rsync's quick
+  The second appears when that destination has any ERR-SRC or ERR-DST, alone or with other
+  statuses, and the third when it has EXTRA paths. With several destinations each message is
+  printed once per destination concerned, naming it and its own tree-diff file, and the
+  first becomes `hashdiff: the trees of ORIGIN and destination-2 differ; destination-2 was
+  not hashed. See tree-diff-destination-2.txt, fix the differences (for example with the
+  suggested rsync command) and run hashdiff again.`
+
+  Exit 4; with several destinations it means that at least one of them was not hashed
+  (section 2). Unlike the command of section 9, the suggested one has no `-I`: rsync's quick
   check is enough to copy missing files and files of a different size, and `-I` would
   rewrite the whole tree.
 
-### 3.2 Resuming an interrupted run
+### 3.2 paths.txt
+
+The parent writes it before forking the children (section 7), so that a run interrupted at any
+point leaves it behind:
+
+    # hashdiff-paths: 1
+    # started: 16/12/2026 12:30
+    origin /abs/path/origin
+    destination-1 /abs/path/destination-1
+    destination-2 /abs/path/destination-2
+
+- `# started:` is the start time of the run, in the format of section 8. It is the one place
+  that always holds it: a run that stops in the tree stage has no hashes file. Section 3.3
+  reads it and section 3.5 names its archive after it.
+- With --file, one more header line, `# file: 1`, so a run started with --file and one
+  started without it are never taken for the same run.
+- With --recheck, one more header line, `# recheck: scan-YYYYMMDDHHMM`, naming the archive
+  whose differences this run rechecks (section 3.5).
+- One line per side: its side name (section 2.2), one space, and its cleaned absolute root,
+  escaped as in section 8. ORIGIN first, then the destinations in command-line order. Label
+  first and path last, as in every other format of the project: a path may contain a newline,
+  which a layout of one line per label and one per path could not hold.
+- It is written once per run and never rewritten; it records what this run compares. A resume
+  keeps the paths.txt of the run it continues, and the `# resumed:` lines go in the hashes
+  files (section 8).
+
+`history.txt` is the same thing kept for good. Immediately before writing paths.txt, the
+parent appends to it the block it is about to write, headers included, followed by one empty
+line:
+
+    # hashdiff-history: 1
+    # started: 16/12/2026 12:30
+    origin /abs/path/origin
+    destination-1 /abs/path/destination-1
+
+    # started: 02/01/2027 08:15
+    origin /abs/path/another-origin
+    destination-1 /abs/path/another-destination
+
+- The first line is written only when the file is created. Blocks are appended, so the file is
+  in chronological order, oldest first, which is the order a plain `fopen(path, "ab")` gives
+  and the only one that needs no rewriting: a "newest first" file would have to be read and
+  written whole on every run, and this one grows for the life of the results directory.
+- It is the only file that nothing ever deletes: section 3.3 does not clean it and section 3.5
+  does not move it into the archive, because it belongs to the directory and not to one run.
+  Every other record of a previous run is either replaced or archived; this is what is left
+  after an --force, and what answers "what has this directory been used for".
+- A run that fails before the tree stage (bad arguments, a root that cannot be read, a refused
+  prompt) appends nothing: the block is written when the run is about to start reading.
+
+### 3.3 An existing results.hashdiff
+
+`mkdir` returning EEXIST starts this section. What hashdiff does depends on the state of the
+previous run, which is read from the directory itself, with no extra bookkeeping. A
+destination *was hashed* when its `tree-diff` file exists and holds no record line; that is
+also how a resume knows which destinations to continue (section 3.4).
+
+- No `hashes-*.txt` and no `hashes-*.txt.tmp`, so nothing was hashed and there is nothing to
+  decide: clean the directory (below) and start over without asking, even with --resume,
+  --force or --recheck. This is the case after an exit 4.
+- Otherwise `paths.txt` must exist. A directory without it was written by an older hashdiff:
+  fatal error (exit 2) whose message suggests --force.
+- paths.txt must describe this run: the same number of destinations, the same cleaned root
+  for every side and the same `# file:` marker. Any difference is a fatal error (exit 2) that
+  names the first role that differs and suggests --force. It is never a question: lists made
+  from another tree are not comparable, so resuming is not one of the possible answers.
+- Then the state is one of three:
+
+      state  recognised by                                      choices
+      1      some `hashes-SIDE.txt.tmp` exists, or a side that   resume, overwrite, abort
+             was to be hashed has no journal at all
+      2      every such side published and no diff file holds    overwrite, abort
+             a record
+      3      every such side published and some diff file        recheck, overwrite, abort
+             holds a record
+
+  "Every such side" is ORIGIN and every destination that was hashed. A journal is published
+  as `hashes-SIDE.txt` only when that side finished (section 3), which is what tells state 1
+  from the others; the `# finished:` line of section 8 is for the reader, never the test.
+
+Flags, which never ask anything:
+
+- --resume: state 1 resumes (section 3.4). In states 2 and 3 it is a fatal error, because the
+  previous run finished and there is nothing to resume; the message suggests --force, and
+  --recheck as well in state 3.
+- --force: any state. Clean the directory and start over.
+- --recheck: state 3 (section 3.5). In states 1 and 2 it is a fatal error suggesting --resume
+  or --force.
+
+Without any of them, if stdin and stderr are both terminals (isatty), ask on stderr (also
+with -q). DD/MM/YYYY HH:MM is the `# started:` of paths.txt:
+
+    results.hashdiff in DIR holds an interrupted run started on DD/MM/YYYY HH:MM.
+    [r]esume, [o]verwrite or [a]bort?
+
+    results.hashdiff in DIR holds a finished run started on DD/MM/YYYY HH:MM with no
+    content differences.
+    [o]verwrite or [a]bort?
+
+    results.hashdiff in DIR holds a finished run started on DD/MM/YYYY HH:MM whose
+    differences were never copied (see rsync-command.txt).
+    [c]heck those paths again, [o]verwrite or [a]bort?
+
+In state 2, when some destination had stopped at the tree stage, the first line ends with
+`with no content differences and N destinations whose trees differ`; there is nothing to
+recheck for those, since nothing was hashed for them.
+
+Read one line from stdin with read() on fd 0. `r` resumes, `o` is --force, `c` is --recheck,
+`a` exits 2 without touching anything; the long forms `resume`, `overwrite`, `recheck` and
+`abort` are accepted, in any case; a letter this state does not offer, or any other answer,
+repeats the question; EOF exits 2.
+
+Without any of them and without a terminal (scripts, CI, tests): fatal error (exit 2) whose
+message names the flags this state accepts.
+
+Cleaning the directory removes every file a run may have left and nothing else. The names
+depend on the number of destinations, so a fixed list cannot do it: read the directory with
+opendir/readdir and unlink every entry that is a regular file whose name is `paths.txt`,
+`tree-changes.txt`, `tree-origin.txt` or `hashes-origin.txt`, or begins with
+`tree-destination`, `hashes-destination`, `tree-diff`, `diff-files`, `rsync-files` or
+`rsync-command`, in every case with or without a `.tmp`, `.new` or `.part` suffix. The
+matching is strncmp and strcmp on prefixes and suffixes, not a glob library. Everything else
+is left untouched, which includes `history.txt` (section 3.2), which is never deleted, and the
+`scan-*` archives of section 3.5: --force never deletes them and nothing in hashdiff ever
+prunes them (say so in the README). A directory left by a
+run with more destinations than this one therefore keeps none of its result files, which is
+the point: a stale `hashes-destination-3.txt` would look like part of the new result.
+
+### 3.4 Resuming an interrupted run
 
 While hashing, each side writes `hashes-SIDE.txt.tmp` progressively: the header first and
 then complete lines in canonical order (section 7), flushed at least every ~2 s and before
@@ -216,39 +480,60 @@ The parent prepares the resume before forking:
 
 1. Source of each side: `hashes-SIDE.txt.tmp` if it exists, otherwise `hashes-SIDE.txt` (the
    side had finished), otherwise none. Stale `hashes-SIDE.txt.new` files are deleted.
-2. `tree-origin.txt` and `tree-destination.txt` must exist with a valid header and the
-   current roots; otherwise fatal error (exit 2) suggesting --force.
-3. Header of each source: the first three lines must be exactly `# hashdiff-format: 2`,
-   `# root:` with the current (escaped, absolute) root of that side, and `# mode:` with the
-   current mode line. A different root or mode is a fatal error (exit 2): lists from another
-   tree or made with other parameters are not comparable. The message suggests --force. A
-   header that is missing or cut short counts as no source.
+2. The tree file of every side must exist with a valid header and the current root;
+   otherwise fatal error (exit 2) suggesting --force.
+3. Header of each source: the first three lines must be exactly `# hashdiff-format: 3`,
+   `# root:` with the current (escaped, cleaned, absolute) root of that side, and `# mode:`
+   with the current mode line. A different root or mode is a fatal error (exit 2): lists from
+   another tree or made with other parameters are not comparable. The message suggests
+   --force. A header that is missing or cut short counts as no source. The `#` lines that may
+   follow those three (`# started:`, `# resumed:`, section 8) are read and kept: they are
+   copied into the new journal, so one file records the whole history of the run.
 4. Valid prefix: read the lines after the header and stop at the first one that is not
    valid: no terminating LF (cut by the interruption); not exactly four fields; type not one
    of F/S/L/E; hash not 32 lowercase hex digits (decimal errno for E); size not decimal (`-`
    for E); a path whose escaping is invalid (`\` followed by anything other than `\`, `n`
    or `r`); or a path that is not strictly greater than the previous one. That line and
-   everything after it are discarded. Each side is cut independently at its own last valid
-   line, so a side that was further ahead (for example, the finished ORIGIN of a --serial
-   run) loses nothing.
-5. The previous outputs (diff-files.txt, rsync-files.lst, rsync-command.txt,
-   tree-changes.txt and their `.tmp` files) are deleted; they are produced again at the end.
+   everything after it are discarded. A line starting with `#` is one of those invalid lines
+   and stops the reading in the same way, which is how the `# finished:` footer of a complete
+   journal (section 8) is handled: it is the normal end of the records, not damage, and
+   nothing is reported about it. Each side is cut independently at its own last valid line, so
+   a side that was further ahead (for example, the finished ORIGIN of a --serial run) loses
+   nothing: the sides are never compared until every list is complete, so cutting one side
+   down to the length of another would throw away work for nothing.
+5. The previous outputs (every `diff-files`, `rsync-files` and `rsync-command` file,
+   `tree-changes.txt` and their `.tmp` files) are deleted; they are produced again at the end.
+   paths.txt and the tree files are kept.
+6. Which destinations continue: the decision of the tree stage is read back from the
+   `tree-diff` files, which are still valid because every tree is verified unchanged below,
+   and they are not rewritten. A destination whose tree-diff holds records stops again and its
+   lines of section 3.1 are printed again in the summary. The origin-vs-destination comparison
+   is not run again.
+7. When paths.txt holds a `# recheck:` line, the archived diff files it names are read again
+   and the recheck sets of section 3.5 are rebuilt, so a resumed recheck reads exactly the
+   same paths as the run it continues.
 
 Tree check: each child traverses and sorts its tree again, keeps the list in memory (it does
 not rewrite tree-SIDE.txt) and compares it with the saved tree-SIDE.txt on every field,
 including mtime. It writes its differences to `tree-changes.txt.SIDE.part`: ADDED (only in the
 current tree), DELETED (only in the saved one) or CHANGED (type, size or mtime differ),
-in canonical order, and tells the parent whether its tree matches (section 7). If either
-tree changed, the parent tells both children to exit, builds `tree-changes.txt`:
+in canonical order, and tells the parent whether its tree matches (section 7). If the tree of
+any side changed, the parent tells every child to exit, builds `tree-changes.txt` with one
+`#` line and one `##` section per side, named by its side name and in command-line order:
 
     # origin: /abs/path/origin
-    # destination: /abs/path/destination
+    # destination-1: /abs/path/destination-1
+    # destination-2: /abs/path/destination-2
     ## origin
     DELETED escaped-path
     CHANGED escaped-path
-    ## destination
+    ## destination-1
     ADDED escaped-path
+    ## destination-2
 
+A changed tree stops the whole resumed run, not only that side: a resume is the continuation
+of one run, and restoring the tree or --force are the two ways out. With one destination the
+names are `# destination:` and `## destination`, as in version 1.1. The parent then
 deletes the `.part` files, prints on stderr
 
     hashdiff: the trees changed since the interrupted run; see tree-changes.txt.
@@ -256,7 +541,7 @@ deletes the `.part` files, prints on stderr
 
 and exits 2 without touching the journals or the tree files.
 
-If both trees match, the hash stage continues on each side:
+If every tree matches, the hash stage continues on each side that has work left:
 
 - The last kept line is always hashed again. If the new line is identical to the old one,
   the run continues from there. Otherwise the new line replaces the old one and a warning is
@@ -274,6 +559,57 @@ and mtime (in seconds) did not change. A file modified within the same second wh
 its size, or whose mtime was restored, is not read again. For a result that reflects the
 current content of every file, use --force.
 
+### 3.5 Rechecking a finished run (--recheck)
+
+Only in state 3 of section 3.3: the previous run finished and found content differences. A
+recheck answers one question, "did the copy that the previous run asked for work?", and the
+copy that was asked for is the rsync command of each destination, which copied that
+destination's own paths and nothing else. That is why every destination is compared only
+against its own paths, in both comparisons: a path that was in another destination's command
+was never part of this destination's question. The other question, "is there anything else
+wrong in this destination", is a normal run. Reading both trees in full again to verify a
+handful of files is waste.
+
+1. Archive. Create `results.hashdiff/scan-YYYYMMDDHHMM/`, the stamp being the `# started:` of
+   the previous run's paths.txt formatted as `%Y%m%d%H%M`, which sorts chronologically, unlike
+   the dd/mm/yyyy of section 8. If that name exists, append `-2`, `-3`, ... until one is free.
+   Move into it, with `rename()`, every file that section 3.3 would clean, which leaves
+   `history.txt` where it is (section 3.2); `rename()` inside
+   one directory is atomic and free, while a copy is neither: a hashes file holds about sixty
+   bytes per entry, so a few million files make hundreds of megabytes. Existing `scan-*`
+   directories are never moved.
+2. Recheck set, built by the parent before forking, so the children inherit it. Read every
+   `diff-files` file of the archive. Its first line and its `# mode:`
+   line must be the current ones; a different mode line is a fatal error (exit 2) suggesting
+   --force, because hashes made with other parameters are not comparable. The recheck set of a
+   destination is the paths of its records whose status is HASH, SIZE, TYPE, MISSING, ERR-SRC
+   or ERR-DST. EXTRA is skipped: that path is not in ORIGIN. ORIGIN's set is the union of all
+   of them.
+3. The run then proceeds exactly as a normal one, with one difference: after a side has
+   traversed and sorted its tree (section 4), every entry whose path is not in that side's
+   recheck set is dropped from the list. The traversal itself is complete, so a path that
+   disappeared is still seen; nothing outside the set is read, hashed, counted or compared.
+   ORIGIN is hashed for the union, so one pass serves every destination, but both comparisons
+   of a destination, the one of section 3.1 and the diff of section 9, consider only the paths
+   of that destination's own set: a path rechecked for one destination and not for another
+   would otherwise be reported as MISSING.
+4. A path of a recheck set that is no longer in any tree is counted and reported once on
+   stderr: `hashdiff: warning: N rechecked paths no longer exist in any tree`. It is not a
+   difference: it was one between two trees and neither holds it now.
+5. paths.txt is written again for the new run, with the same roots, a new `# started:` and a
+   `# recheck: scan-YYYYMMDDHHMM` line naming the archive the sets came from. That line is
+   what makes an interrupted recheck resumable (section 3.4).
+6. A recheck is not a comparison of the trees. Only the paths that already differed are read,
+   so a file that became different anywhere else is not seen and MISSING or EXTRA elsewhere
+   cannot be found. The summary says so on the line after `results:`:
+
+       recheck: only the N paths that differed in the run of 16/12/2026 12:30 were read
+
+   and the same line, prefixed with `# `, goes into the footer of every diff file
+   (section 9). Exit 0 means that those paths match now and never that the trees match; say
+   it in the README next to the exit codes.
+7. The archives are never pruned and --force keeps them (section 3.3).
+
 ## 4. Traversal
 
 - DFS. To avoid exhausting file descriptors, read all names of a directory into memory, call
@@ -290,6 +626,10 @@ current content of every file, use --force.
   independent). It is the order of every output file and of the diff merge. A DFS with each
   directory sorted does NOT produce this order (`a-b` < `a/x` because '-' = 0x2D <
   '/' = 0x2F), so the full list is sorted.
+- With --file nothing is traversed: the list is the single entry of section 2.3, built with
+  `stat` because the root is followed.
+- With --recheck the sorted list is then filtered to that side's recheck set (section 3.5).
+  The traversal itself is never shortened, so a path that no longer exists is still seen.
 
 ## 5. MD5 and full mode
 
@@ -370,23 +710,26 @@ Read execution (does not change the hash):
 - The plan depends only on N and on (gap, block, profile), which are fixed for the whole run
   and written to the `# mode:` header. merge_gap and read order do not affect the hash.
 - Lists generated with different parameters are not comparable: resuming with a different
-  `# mode:` line is a fatal error (section 3.2), and the diff also aborts with a fatal error
+  `# mode:` line is a fatal error (section 3.4), and the diff also aborts with a fatal error
   if the `# mode:` lines of both lists differ (internal consistency check).
 - For type S files, the summary reports the total number of samples, bytes read and average
   coverage (sample bytes / total bytes).
 
 ## 7. Parallelism (fork, no threads)
 
-- The main process validates, handles an existing results.hashdiff (sections 3 and 3.2),
-  creates results.hashdiff, calls `fflush(NULL)` and uses `fork()` to launch one child per
-  tree: ORIGIN → tree-origin.txt and hashes-origin.txt, DESTINATION → tree-destination.txt
-  and hashes-destination.txt. Each child gets two `pipe()`s: child → parent (tree stage
-  result and final statistics) and parent → child (one byte: continue to the hash stage, or
-  exit). The parent waits for the children with `waitpid`, retrying on EINTR.
-- Sequence: both children finish the tree stage (section 3.1) or, when resuming, the tree
-  check (section 3.2) and report it; the parent compares and tells both children to
-  continue or to exit; then both hash. With --serial, one side at a time in each stage:
-  ORIGIN's tree, DESTINATION's tree, then ORIGIN's hashes, then DESTINATION's hashes.
+- The main process validates, handles an existing results.hashdiff (sections 3.3 and 3.5),
+  creates results.hashdiff, writes paths.txt (section 3.2), calls `fflush(NULL)` and uses
+  `fork()` to launch one child per side (section 2.2), so 1 + D children: each one writes
+  `tree-SIDE.txt` and `hashes-SIDE.txt` and nothing else. Each child gets two `pipe()`s:
+  child → parent (tree stage result and final statistics) and parent → child (one byte:
+  continue to the hash stage, or exit). The parent waits for the children with `waitpid`,
+  retrying on EINTR.
+- Sequence: every child finishes the tree stage (section 3.1) or, when resuming, the tree
+  check (section 3.4) and reports it; the parent compares ORIGIN with each destination and
+  tells each child to continue or to exit, destination by destination (section 3.1), ORIGIN
+  continuing if any destination does; then they hash. With --serial, one side at a time inside
+  each stage, in command-line order: ORIGIN's tree, each destination's tree, then ORIGIN's
+  hashes, then each destination's hashes.
 - In the hash stage each child uses the list it already has in memory, reuses the kept
   lines when resuming, hashes, writes its journal and renames it to `hashes-SIDE.txt`. Before exiting it sends its statistics to the
   parent through the pipe as one fixed-size record: entries per type, bytes read, ignored
@@ -416,7 +759,11 @@ Read execution (does not change the hash):
   degrade throughput) but is honored.
 - Output must be byte-for-byte identical with any -j, with or without --serial, with any
   merge_gap, and between a resumed run and an uninterrupted one when the trees did not
-  change.
+  change. The exceptions are the lines that record wall-clock time, which cannot be identical:
+  `# started:`, `# resumed:` and `# finished:` (section 8), the `# started:` of paths.txt and
+  the footer of the diff files (section 9). Comparisons, in the specification and in the
+  tests, are made with those lines removed, and conftest.py provides the helper that removes
+  them.
 - SIGINT and SIGTERM via `sigaction`: the handler only writes a `volatile sig_atomic_t`.
   Processes check it between files and between reads. Workers exit. The child forwards the
   signal to its workers with kill, reads the remaining records until EOF, writes the
@@ -424,38 +771,67 @@ Read execution (does not change the hash):
   128 + signal number. The parent forwards the signal to its children with kill, deletes its
   own `.tmp` files and exits with 128 + signal number.
 - Progress on stderr if isatty(2) and no -q: one line per side every ~2 s (measured with
-  time()), emitted by the child with a single write() call so lines do not interleave. With
-  -j N the child adds up its workers' records: `[origin] 1532/90211 files, 12.4 GiB`.
-  Sizes are formatted with integer arithmetic.
+  time()), emitted by the child with a single write() call so lines do not interleave. The tag
+  is the side name of section 2.2. With -j N the child adds up its workers' records:
+  `[destination-2] 1532/90211 files, 12.4 GiB`. Sizes are formatted with integer arithmetic.
 
-## 8. Format of hashes-origin.txt and hashes-destination.txt
+## 8. Format of the hashes files
 
-    # hashdiff-format: 2
+    # hashdiff-format: 3
     # root: /abs/path/origin
     # mode: full
+    # started: 16/12/2026 12:30
+    # resumed: 17/12/2026 09:05
     F d41d8cd98f00b204e9800998ecf8427e 0 docs/empty.txt
     S <32 hex> 10737418240 video/big.mkv
     L <32 hex> 11 lib/libfoo.so
     E 13 - private
+    # finished: 17/12/2026 04:30
 
-- Header: `#` lines only at the beginning. In fast mode:
-  `# mode: fast gap=67108864 block=65536 profile=ssd seek_bytes=200000`
+- Timestamps. Every timestamp hashdiff writes is local time in the form `dd/mm/yyyy HH:MM`,
+  from `strftime("%d/%m/%Y %H:%M", localtime(&t))` into a 32-byte buffer. 24-hour on purpose:
+  `%I` needs `%p`, which is locale-dependent and which the standard allows to be empty. The
+  only other form is the `%Y%m%d%H%M` of the archive names of section 3.5, which has to sort.
+- The first three lines are exactly `# hashdiff-format:`, `# root:` and `# mode:`, in that
+  order: the resume reads them by position (section 3.4). In fast mode the third is
+  `# mode: fast gap=67108864 block=65536 profile=ssd seek_bytes=200000`.
+- After them, any number of `#` lines: `# started:`, the moment the parent began the run,
+  identical on every side, and one `# resumed:` per resume, in order, carried over from the
+  journal being continued (section 3.4).
+- `# finished:` is written when the side has hashed everything, just before the journal is
+  published with `rename()`, so a published `hashes-SIDE.txt` always carries it and a `.tmp`
+  left by an interruption never does. It is there for whoever reads the file: what tells a
+  finished side from an interrupted one is which of the two names exists (sections 3 and 3.3).
+- Every reader of these files skips the `#` lines before the first record and accepts the ones
+  after the last record: the diff (section 9), the resume (section 3.4) and the test helpers.
+  A reader that rejects an unknown `#` header, or that counts header lines instead of testing
+  them, breaks on the lines above. `# hashdiff-format:` is 3 and not 2 for that reason: a
+  results directory written by version 1.1 is refused with a clear message instead of being
+  misread.
 - Fields separated by a single space: type, hash (32 lowercase hex; for E, the errno in
   decimal), size (decimal; for L, length of the link target; for E, `-`) and path.
 - Types: F = regular file with full MD5; S = regular file with sampled hash; L = symlink,
   with hash = MD5 of the target returned by readlink; E = error.
 - The path is the last field and may contain spaces. Escaping: `\` → `\\`, LF → `\n`,
   CR → `\r`; all other bytes are written as-is, including non-UTF-8. `# root:` is escaped
-  the same way and is absolute (getcwd + concatenation, without resolving symlinks).
+  the same way and is the cleaned absolute path of section 2.1.
 - Lines follow the canonical order of section 4, computed on the unescaped path.
 
-## 9. Diff: diff-files.txt, rsync-files.lst and rsync-command.txt
+## 9. Diff: the diff-files, rsync-files and rsync-command files
 
-- If either side exits with 2: exit 2 without diffing. If both exit with 0 or 3, the parent
-  streams both files with its own line reader (arbitrary length), checks that the `# mode:`
-  lines match and that paths are in strictly increasing order (otherwise fatal error),
-  unescapes, and performs a merge-join with strcmp on the raw paths. Constant memory with
-  respect to the number of files.
+One comparison per destination that reached the hash stage, in command-line order, each one
+writing its own three files (section 3).
+
+- A side that exits with 2 is a fatal error for the run (exit 2 by precedence, section 2), but
+  every destination that finished is still compared and reported, so its work is not lost. If
+  ORIGIN exits with 2 nothing can be compared and the run stops at once.
+- For each destination that exited with 0 or 3, the parent streams `hashes-origin.txt` and
+  that destination's list with its own line reader (arbitrary length), re-opening
+  `hashes-origin.txt` for every destination, checks that the `# mode:` lines match and that
+  paths are in strictly increasing order (otherwise fatal error), unescapes, and performs a
+  merge-join with strcmp on the raw paths. Constant memory with respect to the number of
+  files. With --file the single entries are compared by position (section 2.3); with --recheck
+  only the paths of that destination's recheck set are considered (section 3.5).
 - Status per path, first matching rule wins. After a matching tree stage only HASH and the
   ERR statuses are expected; the others appear only if a tree changed during the hash
   stage (for example, a file grew after the tree stage: its fstat size differs):
@@ -467,26 +843,86 @@ Read execution (does not change the hash):
   6. Different size → SIZE
   7. Different hash → HASH
   8. Identical → nothing is written
-- diff-files.txt: header (`# origin:`, `# destination:`, `# mode:`) and one line
-  `STATUS escaped-path` per difference, in canonical order. Identical paths do not appear.
-- rsync-files.lst: raw path terminated by `\0` for MISSING, SIZE, HASH, TYPE and ERR-DST
+- The diff-files file of a destination:
+
+      # hashdiff-diff: 1
+      # origin: /abs/path/origin
+      # destination: /abs/path/destination-2
+      # mode: full
+      HASH d41d8cd98f00b204e9800998ecf8427e 900150983cd24fb0d6963f7d28e17f72 docs/report.pdf
+      MISSING 0cc175b9c0f1b6a831c399e269772661 - docs/new.pdf
+      EXTRA - f96b697d7cb7938d525a2f31aaf161d0 tmp/left-over
+      ERR-DST c3fcd3d76192e4007dfb496cca67e13b 13 private/key
+      # finished: 12/12/2026 12:30
+      # origin: 6669 files, 33.5 GiB read, 0 ignored
+      # destination: 6669 files, 33.5 GiB read, 0 ignored
+      # elapsed: 590 s, 121.9 MB/s
+      # sampled files: 13312, 66560 samples, 65.0 GiB read of 3.3 TiB (coverage 1.91 %)
+      # differences: 1 HASH, 0 MISSING, 0 EXTRA, 0 SIZE, 0 TYPE, 0 ERR-SRC, 0 ERR-DST
+
+  - First line `# hashdiff-diff: 1`: --recheck reads this file back (section 3.5), so it
+    carries its own version. Then `# origin:` and `# destination:`, the cleaned escaped roots,
+    and `# mode:`.
+  - One record per difference, in canonical order:
+    `STATUS ORIGIN-HASH DESTINATION-HASH escaped-path`. The two hashes come before the path
+    because the path is the last field and may contain spaces (section 8); appending them
+    after it would make the line unparseable. Each hash is the 32 hex digits of that side's
+    entry, the decimal errno when that entry is an E, or `-` when that side has no entry at
+    all (the destination's for MISSING, the origin's for EXTRA). Identical paths do not appear.
+  - The footer begins at `# finished:` and every `#` line from there on belongs to it: that
+    marker, the `# recheck:` line when there is one (section 3.5), and then the lines of the
+    summary below that concern this destination, in the same order and with the same text: the
+    ORIGIN line, this destination's line, `elapsed:`, the fast-mode metrics and this
+    destination's counts, never the `results:` line and never a command. `# origin:` and `# destination:`
+    therefore appear twice in the file, as a root in the header and as a count in the footer;
+    `# finished:` is what tells the two apart, which works even when there are no records.
+- The rsync-files file: raw path terminated by `\0` for MISSING, SIZE, HASH, TYPE and ERR-DST
   (EXTRA and ERR-SRC are not transferred). Always created, empty if there is nothing to
-  transfer. EXTRA paths (a file created in DESTINATION during the hash stage) only appear in
-  diff-files.txt, with a warning on stderr that the tree changed during the run.
-- Summary on stdout: path of results.hashdiff, files and bytes read per side, ignored
-  entries, elapsed time, MB/s, count per status and, in fast mode, the metrics from
-  section 6.3. When resuming, also the number of reused entries per side and whether each
-  side's last kept entry was verified or re-hashed. If there is anything to transfer, print
-  on a single line:
+  transfer, and not created at all with --file (section 2.3). EXTRA paths (a file created in
+  the destination during the hash stage) appear only in the diff-files file, with a warning on
+  stderr that the tree changed during the run.
+- Summary on stdout, printed for every run, including one where every destination stopped in
+  the tree stage and nothing was hashed; items 4, 5 and 6 are then absent. In this order:
+  1. `results:` and the cleaned absolute path of results.hashdiff;
+  2. with --recheck, the `recheck:` line of section 3.5;
+  3. one line per side, ORIGIN first and then the destinations in command-line order: a side
+     that was hashed prints `SIDE: N files, X read, M ignored`, and a destination that stopped
+     at the tree stage prints `SIDE: N files, M ignored`, without a `read` figure;
+  4. when resuming, `resume SIDE: N entries reused, <last kept entry verified | re-hashed |
+     no kept entries>` per side that was hashed;
+  5. if anything was hashed, `elapsed: T s, R MB/s`, where R is `-` when T is 0, so the line
+     always has the same shape, which matters because it also goes into the footer above;
+  6. in fast mode, the metrics of section 6.3, added up over every side that was hashed;
+  7. one line per destination, in command-line order: its count per status as
+     `differences with DEST: ...`, or `no differences with DEST` when it has none, or
+     `tree differences with DEST: ...` when it stopped at the tree stage (section 3.1);
+  8. one command block per destination that has a command, in command-line order:
+     `command for DEST:` and then, on a single line,
 
-      rsync -a -I --from0 --files-from='<abs>/results.hashdiff/rsync-files.lst' '<ORIGIN abs>/' '<DESTINATION abs>/'
+         rsync -a -I --from0 --files-from='<abs>/results.hashdiff/rsync-files-destination-2.lst' '<ORIGIN abs>/' '<DESTINATION abs>/'
 
-  and write the same line followed by LF to rsync-command.txt. rsync-command.txt is always
-  created, empty if there is nothing to transfer. Paths are quoted with POSIX quoting
-  (`'` → `'\''`). `-I` is mandatory: without it, rsync's quick check
-  (size + mtime) would skip corrupted files that keep their size and mtime. `--files-from`
-  implies -R and cancels the -r implied by -a, which is correct because the list contains
-  only files.
+     or, for a destination that stopped at the tree stage, the `suggested command for DEST`
+     block of section 3.1;
+  9. when at least one command of the hash stage was printed, once:
+
+         NOTE: the commands above copy with rsync only the files whose content did not match.
+               There is a copy of each one in its results.hashdiff/rsync-command-destination-N.txt
+
+  With one destination every label is the one of version 1.1: `destination:` in 3 and 4,
+  `differences:` or `no differences: ORIGIN and DESTINATION match` or `tree differences:` in
+  7, the command alone with no `command for` line in 8, and in 9
+
+         NOTE: the command above copies with rsync only the files whose content did not match.
+               There is a copy of it in results.hashdiff/rsync-command.txt
+
+  Every count printed next to a noun uses the singular when it is 1: `1 file`, `1 path`,
+  `0 files`.
+- The command of a destination is written, followed by LF, to its rsync-command file, which is
+  always created and is empty when there is nothing to transfer. Paths are quoted with POSIX
+  quoting (`'` → `'\''`). `-I` is mandatory: without it, rsync's quick check (size + mtime)
+  would skip corrupted files that keep their size and mtime. `--files-from` implies -R and
+  cancels the -r implied by -a, which is correct because the list contains only files. With
+  --file the command is the direct form of section 2.3 and there is no `--files-from`.
 
 ## 10. Repository layout
 
@@ -500,9 +936,12 @@ Read execution (does not change the hash):
     src/walk.c/.h     traversal, list, sorting
     src/plan.c/.h     profiles, sampling plan, cost model (no I/O)
     src/hasher.c/.h   full and fast modes, plan execution, workers, output writing
-    src/diff.c/.h     merge-join, diff-files.txt, rsync-files.lst, rsync-command.txt
+    src/diff.c/.h     merge-join, the diff-files, rsync-files and rsync-command files
+    src/runstate.c/.h paths.txt, the state of an existing results.hashdiff and its cleaning,
+                      the scan-* archive and the recheck sets (sections 3.2, 3.3 and 3.5)
     src/util.c/.h     xmalloc, dynamic buffers, escape/unescape, off_t <-> decimal,
-                      off_t arithmetic with overflow detection, EINTR-safe I/O
+                      off_t arithmetic with overflow detection, EINTR-safe I/O, path cleaning
+                      (section 2.1), timestamp formatting (section 8)
     src/os.c/.h       encapsulated POSIX calls
     src/testhook.c    test-only driver (see below); never installed
     tests/requirements.txt
@@ -537,9 +976,12 @@ exposes internal functions to the Python tests:
   `make test-deps test PYTHON=tests/venv/bin/python`. `make test` builds hashdiff and hashdiff-testhook and runs
   `$(PYTHON) -m pytest tests`; it does not install anything.
 - tests/conftest.py provides fixtures: paths to both binaries (from env HASHDIFF_BIN and
-  HASHDIFF_TESTHOOK, defaulting to ./hashdiff and ./build/hashdiff-testhook), a function
+  HASHDIFF_TESTHOOK, defaulting to ./build/hashdiff and ./build/hashdiff-testhook), a function
   that runs hashdiff and returns (exit code, stdout, stderr), a tree builder on top of
-  pytest's tmp_path, and parsers for hashes-*.txt, diff-files.txt and rsync-files.lst.
+  pytest's tmp_path, and parsers for the hashes, diff-files, rsync-files and paths.txt
+  formats. Two more helpers for the work of sections 2.2 and 7: one that returns the name of a
+  side's files for a given number of destinations, and one that removes the time-dependent
+  lines of a result file so that two runs can be compared byte for byte.
 - Paths with arbitrary bytes are handled as bytes (os.fsencode / bytes paths) everywhere;
   output files are read in binary mode and parsed as bytes, never decoded as UTF-8.
 - Cross-check MD5 with hashlib.md5, not with external md5sum/md5 tools.
@@ -581,8 +1023,8 @@ test_diff.py:
    terminal (stdin=DEVNULL) → exit 2; with --force → exit 0. Options after the paths
    (`ORIGIN DESTINATION --output DIR`) and trailing slashes on the paths give the same result.
 5. HASH with 1 byte changed and same size, and HASH on a symlink with a different target of
-   the same length; exit 1. rsync-command.txt contains exactly the command printed on
-   stdout plus LF.
+   the same length; exit 1. rsync-command.txt contains exactly the rsync line printed on
+   stdout plus LF, and that line is followed on stdout by the NOTE of section 9.
 
 test_names.py:
 6. Names with a space, leading `-`, `\`, tab, newline and a non-UTF-8 byte (b'a\xffb'):
@@ -598,7 +1040,7 @@ test_walk.py:
 
 test_tree.py:
 23. MISSING, EXTRA, SIZE and TYPE (file vs symlink) → exit 4; tree-diff.txt has each entry
-    in the right section; hashes-*.txt, diff-files.txt, rsync-files.lst and
+    in the right section; paths.txt exists; hashes-*.txt, diff-files.txt, rsync-files.lst and
     rsync-command.txt do not exist; stderr has the "trees differ" message and the warning
     about files only in DESTINATION. Suggested command: with EXTRA it has --delete-after;
     with only MISSING/SIZE/TYPE it has not; with only ERR there is none and stderr has the
@@ -623,7 +1065,8 @@ test_fast_mode.py:
     in fast mode. The same in full mode is marked slow.
 
 test_parallel.py:
-14. Byte-for-byte identical result files with -j 1, -j 4, --serial and --profile hdd.
+14. Byte-for-byte identical result files with -j 1, -j 4, --serial and --profile hdd, with the
+    time-dependent lines of section 7 removed.
 
 test_rsync.py:
 15. Skip if rsync is not in PATH. Corrupt a DESTINATION file while keeping size and mtime
@@ -632,10 +1075,13 @@ test_rsync.py:
 
 test_resume.py:
 In every case "identical" means all the result files are byte-for-byte equal to those of an
-uninterrupted run with --force on the same trees.
-12. A completed run in full mode, then --resume with --fast → exit 2 (different `# mode:`).
-    --resume with a different ORIGIN in the same results.hashdiff → exit 2. --resume
-    together with --force → exit 2.
+uninterrupted run with --force on the same trees, once the time-dependent lines of section 7
+have been removed with the conftest helper.
+12. A completed run, then --resume → exit 2, because the run finished and there is nothing to
+    resume (section 3.3), with a message that suggests --force. An interrupted run with
+    `--resume --fast` over a full-mode journal → exit 2 (different `# mode:`). --resume with a
+    different ORIGIN in the same results.hashdiff → exit 2. --resume together with --force,
+    and either of them with --recheck → exit 2.
 17. Simulated interruption: after a completed run, rename both hashes files to `.tmp`, cut
     them at different points (the longer one in the middle of a line) and delete the diff
     outputs; --resume → identical, and the longer side keeps all its valid lines (each side
@@ -648,14 +1094,93 @@ uninterrupted run with --force on the same trees.
     a file with only its mtime changed with os.utime) → exit 2, tree-changes.txt with each
     entry as DELETED, ADDED or CHANGED in the right section, journals and tree files
     untouched. Restoring the trees (and the mtime) and running --resume again → identical.
-21. Prompt through a pseudo-terminal (os.openpty for stdin and stderr): `a` → exit 2 and
-    nothing is touched; `o` → starts over; `r` → resumes; an invalid answer repeats the
-    question.
+21. Prompt through a pseudo-terminal (os.openpty for stdin and stderr) on an interrupted run,
+    state 1 of section 3.3: `a` → exit 2 and nothing is touched; `o` → starts over; `r` →
+    resumes; an invalid answer repeats the question. The other two states are test 34.
 22. Real interruption, with -j 1 and -j 4: SIGINT once the journal has some lines → exit
     130, `hashes-*.txt.tmp` kept; then --resume → identical. The tree is 50 small files and
     then a 2 GiB sparse file that takes seconds to read (small files alone are read from the
     page cache too fast to interrupt reliably). Skip with a reason if the filesystem has no
     sparse files or the run finishes before the signal is delivered.
+
+test_paths.py:
+27. Path cleaning (section 2.1): the same trees compared as `o`, `./o`, `o/`, `./././o`,
+    `../<dir>/o` and an absolute path give identical result files, and every `# root:`,
+    `# origin:`, `# destination:`, `results:` line and suggested command shows a path with no
+    `.`, no `..`, no `//` and no trailing slash. `--output .`, `--output ./`, `--output .//.`
+    and no --output at all print the same `results:` path. A run interrupted as `./o ./d` and
+    resumed as `o d` resumes instead of failing.
+28. paths.txt and history.txt (section 3.2): one line per side in command-line order; labels
+    `origin` and
+    `destination` with one destination and `origin`, `destination-1`, ... with several; cleaned
+    absolute escaped paths, including a root whose name holds a newline; a `# started:` that
+    parses as `%d/%m/%Y %H:%M`; `# file: 1` only with --file; and the file present after a run
+    that stopped at the tree stage (exit 4). history.txt: one block per run in chronological
+    order, its first line written once, surviving --force and a recheck, and not appended to by
+    a run that fails before the tree stage.
+
+test_file_mode.py:
+29. --file (section 2.3): two identical files → exit 0; one byte changed with the same size →
+    exit 1, one HASH record, and `rsync -a -I 'ORIGIN' 'DESTINATION'` both on stdout and in
+    rsync-command.txt; two files with different names → HASH and never MISSING or EXTRA;
+    different sizes → exit 4 in the tree stage with the same command without `-I`;
+    rsync-files.lst does not exist; both files in one directory is a valid run; the same file
+    given twice → exit 2; a symlink to a file is followed and no L entry ever appears; a
+    directory with --file and a regular file without it produce the two messages of
+    section 2.3 and exit 2, while a FIFO keeps `is not a directory`; `-x` and `-j 4` warn;
+    --file with two destinations.
+
+test_multi.py:
+30. Three destinations (section 2.2), one identical to ORIGIN, one with a HASH difference and
+    one whose tree differs: exit 4 by precedence; the numbered files of section 3 exist and
+    the unnumbered ones do not; the per-destination lines of the summary are in command-line
+    order and name every destination; the destination whose tree differs has no hashes file
+    while the other two do; hashes-origin.txt is written once and its entries are read once.
+    The same trees with one destination give exactly the file names and the summary labels of
+    version 1.1.
+31. Identical result files with -j 1, -j 4 and --serial over three destinations.
+32. Rejections and warnings: a destination equal to ORIGIN, two equal destinations, 65
+    destinations and `--number-of-destinations 2` with three destinations → exit 2 each, the
+    message naming the roles. A destination nested inside another is excluded with a warning
+    and every suggested command carries its `--exclude`. `(1 + D) * --jobs` over 64 warns.
+33. Cleaning (section 3.3): a three-destination run, then a two-destination run with --force in
+    the same directory → no file whose name holds `destination-3` is left behind, and a
+    `scan-*` directory created by hand survives.
+
+test_existing.py:
+34. The three states of section 3.3 through a pseudo-terminal: state 1 offers r/o/a, state 2
+    o/a and state 3 c/o/a; every answer does what it says and a letter the state does not offer
+    repeats the question. Without a terminal each state exits 2 with a message naming the flags
+    that state accepts. --recheck in states 1 and 2 → exit 2. A results.hashdiff with no
+    paths.txt → exit 2 suggesting --force. A changed root, and a different number of
+    destinations, → exit 2 without asking, even on a terminal.
+
+test_recheck.py:
+35. --recheck (section 3.5): a run with two differing files; copy one of them with the printed
+    command; --recheck → the previous files are in `scan-YYYYMMDDHHMM/`, named after the
+    previous run's `# started:`; only those two paths were read (the `recheck:` line and the
+    per-side counts of the summary); the copied one is gone from the new diff file and the
+    other is still there; exit 1. Then copy the second and --recheck again → exit 0 and a
+    second archive. Two archives in the same minute → the `-2` suffix. A rechecked path deleted
+    from every tree → the warning of step 4 and no difference. --recheck with a different
+    `# mode:` → exit 2. An interrupted recheck resumed reads the same paths. With three
+    destinations, a path rechecked for one of them only is not reported as MISSING for the
+    others.
+
+test_formats.py:
+36. Timestamps (section 8): `# started:` and `# finished:` in every published hashes file,
+    `# finished:` absent from a `.tmp` journal, one `# resumed:` line per resume and in order,
+    `# hashdiff-format: 3`, and a results directory whose hashes files say `2` → exit 2 with a
+    message that says it was written by an older hashdiff. Two runs over the same trees are
+    identical once the time-dependent lines are removed, and differ only in those lines.
+37. The diff-files format (section 9): the `# hashdiff-diff: 1` line; the two hash columns
+    equal to the hashes files for HASH and SIZE; `-` for the side without an entry in MISSING
+    and EXTRA; the decimal errno for ERR-SRC and ERR-DST; a path with spaces and a newline
+    still parsed, because the path is the last field; and a footer that starts at
+    `# finished:` whose lines repeat the summary of that destination.
+38. The summary (section 9): `1 file` and not `1 files` for a tree of one file;
+    `elapsed: 0 s, - MB/s`; the NOTE after the command, and no NOTE when there is nothing to
+    copy.
 
 Sanitizers:
 16. `make asan` followed by `make test` passes (the binaries under test are the ASan builds).
@@ -681,7 +1206,7 @@ earlier only if marked xfail with a reason.
    and fadvise; tests 10, 11 and 13.
 6. -j with chunks and result records, --serial, -x, inode read order per chunk on hdd,
    progress and signals; test 14.
-7. Resume (section 3.2) with the tree check and tree-changes.txt, --resume and the prompt;
+7. Resume (section 3.4) with the tree check and tree-changes.txt, --resume and the prompt;
    tests 12 and 17-22.
 8. README: what hashdiff does, build and install (GNU make), usage with examples, the two
    stages and every output file, exit codes, that hashdiff never runs rsync, that the
@@ -690,6 +1215,38 @@ earlier only if marked xfail with a reason.
    --gap guarantee, why S hashes are not comparable with md5sum, resume and its limitation,
    how to run the tests (make test-deps, make test, HASHDIFF_SLOW_TESTS=1) and the CI
    badge. Test 16.
+
+Phases 1 to 8 are version 1.1. Phases 9 to 15 are the work of sections 2.1, 2.2, 2.3, 3.2,
+3.3, 3.5 and the parts of 3, 3.1, 7, 8 and 9 that depend on them. Their order is not the order
+in which they were asked for: phase 10 renames every per-destination file and is what makes a
+side name the key of every output, so doing it before the formats and the prompts writes them
+once instead of twice.
+
+9. Path cleaning in util and its use for ORIGIN, the destinations, --output and every root,
+   message and command (section 2.1); the singular of the counts and the fixed shape of
+   `elapsed:` (section 9); the NOTE after a command (section 9). Tests 27 and 38. README: the
+   examples and the note about `..`.
+10. Several destinations (sections 2.2, 3, 3.1, 7 and 9): side names, 1 + D children, the
+    per-destination decision of the tree stage, the numbered files, one comparison and one
+    command block per destination, the exit-code precedence of section 2,
+    --number-of-destinations and the warning about the number of readers. Tests 30 to 33.
+    README: usage, the table of output files and the exit codes.
+11. runstate.c: paths.txt and history.txt (section 3.2) and the cleaning of the directory by
+    prefix and suffix
+    instead of a fixed list (section 3.3). Timestamps, `# hashdiff-format: 3` and readers that
+    skip the `#` lines before the records and accept the ones after (sections 7 and 8); the two
+    hash columns and the footer of the diff files, with `# hashdiff-diff: 1` (section 9).
+    Tests 28, 36 and 37.
+12. The three states of an existing results.hashdiff, their flags and their prompts
+    (section 3.3). Test 34. README: what hashdiff asks and which flag answers it.
+13. --recheck: the archive, the recheck sets, the filtered lists and the `recheck:` line
+    (section 3.5). Test 35. README: that exit 0 after a recheck does not mean that the trees
+    match, and that the archives are never pruned.
+14. --file (section 2.3). Test 29. README: usage and the limitation of resume.
+15. README and RELEASE_NOTES.md sweep. The on-disk formats of this work do not read on version
+    1.1 and 1.1 does not read theirs, so the release that carries it is 1.2: bump `HD_VERSION`
+    in src/config.h, the `--version` line of section 2 and `test_version` in
+    tests/test_cli.py together, as the checklist in RELEASE_NOTES.md says.
 
 ## 13. Continuous integration (GitHub Actions)
 
