@@ -265,8 +265,29 @@ typedef void (*merge_fn)(void *ctx, int status, const char *path,
                          const struct hd_record *o, const struct hd_record *d);
 
 /* Merge-join of both streams in canonical order; calls fn for every differing path. */
-static void merge(struct stream *o, struct stream *d, merge_fn fn, void *ctx)
+/* Section 2.3: one entry per side, paired by position; the path recorded is ORIGIN's. */
+static void merge_positional(struct stream *o, struct stream *d, merge_fn fn, void *ctx)
 {
+    while ((o->has || d->has) && !os_caught_signal()) {
+        const struct hd_record *ro = o->has ? &o->cur : NULL;
+        const struct hd_record *rd = d->has ? &d->cur : NULL;
+        int st = classify(ro, rd);
+
+        if (st >= 0)
+            fn(ctx, st, (ro != NULL ? ro : rd)->path.data, ro, rd);
+        if (o->has)
+            stream_next(o);
+        if (d->has)
+            stream_next(d);
+    }
+}
+
+static void merge(struct stream *o, struct stream *d, merge_fn fn, void *ctx, int positional)
+{
+    if (positional) {
+        merge_positional(o, d, fn, ctx);
+        return;
+    }
     /* A caught signal stops the merge; the caller discards its outputs. */
     while ((o->has || d->has) && !os_caught_signal()) {
         int c = !o->has ? 1 : !d->has ? -1 : strcmp(o->cur.path.data, d->cur.path.data);
@@ -369,7 +390,7 @@ void diff_trees(const char *results, const struct hd_names *n, const char *abs_o
         outfile_write(&out, i == 0 ? "## origin\n" : "## destination\n",
                       i == 0 ? 10 : 15);
         pass.destination = i;
-        merge(&o, &d, tree_pass_fn, &pass);
+        merge(&o, &d, tree_pass_fn, &pass, n->file_mode);
         stream_close(&o);
         stream_close(&d);
         if (os_caught_signal())
@@ -409,7 +430,8 @@ static void append_pattern(struct hd_buf *out, const char *rel)
     buf_free(&pat);
 }
 
-void suggest_command(struct hd_buf *out, const struct hd_counts *c, const char *abs_origin,
+void suggest_command(struct hd_buf *out, const struct hd_names *n,
+                     const struct hd_counts *c, const char *abs_origin,
                      const char *abs_destination, int one_fs, char **excluded,
                      size_t nexcluded)
 {
@@ -432,6 +454,13 @@ void suggest_command(struct hd_buf *out, const struct hd_counts *c, const char *
             append_pattern(out, excluded[i]);
     }
     buf_append_char(out, ' ');
+    if (n->file_mode) {
+        /* Section 2.3: the two files, not their directories, and no trailing slash. */
+        hd_shell_quote(out, n->origin_path);
+        buf_append_char(out, ' ');
+        hd_shell_quote(out, n->dest_path);
+        return;
+    }
     quote_dir(out, abs_origin);
     buf_append_char(out, ' ');
     quote_dir(out, abs_destination);
@@ -477,7 +506,7 @@ static void hash_pass_fn(void *ctx, int status, const char *path,
     hd_escape(&p->line, path);
     buf_append_char(&p->line, '\n');
     outfile_write(p->diff, p->line.data, p->line.len);
-    if (status != ST_EXTRA && status != ST_ERR_SRC)
+    if (p->list != NULL && status != ST_EXTRA && status != ST_ERR_SRC)
         outfile_write(p->list, path, strlen(path) + 1);   /* raw path and its '\0' */
 }
 
@@ -544,7 +573,8 @@ int diff_hashes(const char *results, const struct hd_names *n, const char *abs_o
     if (strcmp(o.mode.data, d.mode.data) != 0)
         hd_die("the '# mode:' lines of the hashes files differ; the lists are not comparable");
     outfile_open(diff, results, n->diff_files);
-    outfile_open(&list, results, n->rsync_list);
+    if (!n->file_mode)
+        outfile_open(&list, results, n->rsync_list);
     /* The file is read back by --recheck (section 3.5), so it carries its own version. */
     outfile_write(diff, "# hashdiff-diff: 1\n", 19);
     write_roots_header(diff, abs_origin, abs_destination);
@@ -552,30 +582,40 @@ int diff_hashes(const char *results, const struct hd_names *n, const char *abs_o
     outfile_write(diff, o.mode.data, o.mode.len);
     outfile_write(diff, "\n", 1);
     pass.diff = diff;
-    pass.list = &list;
+    pass.list = n->file_mode ? NULL : &list;
     pass.c = c;
     buf_init(&pass.line);
-    merge(&o, &d, hash_pass_fn, &pass);
+    merge(&o, &d, hash_pass_fn, &pass, n->file_mode);
     buf_free(&pass.line);
     stream_close(&o);
     stream_close(&d);
     if (os_caught_signal()) {
         outfile_discard(diff);
-        outfile_discard(&list);
+        if (!n->file_mode)
+            outfile_discard(&list);
         return 0;
     }
-    outfile_commit(&list);
+    if (!n->file_mode)
+        outfile_commit(&list);
 
     buf_clear(cmd);
     if (counts_total(c) - c->n[ST_EXTRA] - c->n[ST_ERR_SRC] > 0) {
-        lst = hd_path_join(results, n->rsync_list);
-        buf_append_str(cmd, "rsync -a -I --from0 --files-from=");
-        hd_shell_quote(cmd, lst);
-        buf_append_char(cmd, ' ');
-        quote_dir(cmd, abs_origin);
-        buf_append_char(cmd, ' ');
-        quote_dir(cmd, abs_destination);
-        free(lst);
+        if (n->file_mode) {
+            /* A list would copy ORIGIN's name into the destination's directory. */
+            buf_append_str(cmd, "rsync -a -I ");
+            hd_shell_quote(cmd, n->origin_path);
+            buf_append_char(cmd, ' ');
+            hd_shell_quote(cmd, n->dest_path);
+        } else {
+            lst = hd_path_join(results, n->rsync_list);
+            buf_append_str(cmd, "rsync -a -I --from0 --files-from=");
+            hd_shell_quote(cmd, lst);
+            buf_append_char(cmd, ' ');
+            quote_dir(cmd, abs_origin);
+            buf_append_char(cmd, ' ');
+            quote_dir(cmd, abs_destination);
+            free(lst);
+        }
     }
     outfile_open(&command, results, n->rsync_command);
     if (cmd->len > 0) {

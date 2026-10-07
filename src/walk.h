@@ -48,6 +48,10 @@ struct walk_opts {
 /* Traverses root; an unreadable root is a fatal error. The list is not sorted. The
  * traversal stops early if a signal was caught (os_caught_signal). */
 void walk_tree(const char *root, const struct walk_opts *wo, struct hd_list *list);
+
+/* Section 2.3: no traversal. The list holds the single entry "name" of the directory root,
+ * stat'd and not lstat'd, because the path given on the command line is followed. */
+void walk_file(const char *root, const char *name, struct hd_list *list);
 void list_sort(struct hd_list *list);
 void list_free(struct hd_list *list);
 

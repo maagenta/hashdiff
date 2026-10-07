@@ -43,6 +43,7 @@ Options may appear before, between or after the paths.
     -x, --one-file-system   Do not cross mount points
         --number-of-destinations N
                             Fail unless exactly N destinations were given
+        --file              ORIGIN and the destinations are files, not directories
         --ignore-lock       Do not refuse when another run holds the lock
     -q, --quiet             No progress on stderr
     -h, --help
@@ -63,6 +64,19 @@ skipped while the rest are hashed. With one destination every file name and ever
 summary is what it was before, so nothing changes for the common case.
 `--number-of-destinations N` checks the count before anything is read, for scripts where a
 mistyped or glob-expanded path would otherwise become one more destination in silence.
+
+**Comparing single files.** With `--file`, ORIGIN and the destinations are regular files
+instead of directories: one disk image or archive verified against its copies.
+
+    hashdiff --file /data/disk.img /mnt/backup/disk.img
+
+A symlink given as a path is followed, so the file that is read is the one it reaches. The two
+files may have different names, so they are compared by position and not by name, which means
+only `HASH`, `SIZE`, `ERR-SRC` and `ERR-DST` can ever appear. The command that copies the file
+names the two files directly, `rsync -a -I 'ORIGIN' 'DESTINATION'`, and no `rsync-files.lst` is
+written: a list holding ORIGIN's name would copy it into the destination's directory, which is
+wrong as soon as the names differ. `-x` and `--jobs` have nothing to do here and say so, and
+resume has one entry of granularity, so an interrupted `--file` run reads the whole file again.
 
 Every path is cleaned before anything else: a relative path is taken from the current
 directory, and `.`, `..` and repeated slashes are removed. So `photos`, `./photos/` and

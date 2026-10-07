@@ -171,6 +171,26 @@ static int cmp_entry_path(const void *a, const void *b)
 }
 
 /* Canonical order: strcmp on the raw bytes (strcmp compares as unsigned char). */
+void walk_file(const char *root, const char *name, struct hd_list *list)
+{
+    struct hd_entry *e;
+    struct os_stat st;
+    char *full;
+
+    list_init(list);
+    full = hd_path_join(root, name);
+    e = list_push(list, arena_strndup(&list->arena, name, strlen(name)), ENT_FILE);
+    if (os_stat(full, &st) != 0) {
+        e->type = ENT_ERROR;
+        e->err = errno;
+    } else {
+        e->size = st.size;
+        e->mtime = st.mtime;
+        e->ino = st.ino;
+    }
+    free(full);
+}
+
 void list_sort(struct hd_list *l)
 {
     if (l->count > 1)

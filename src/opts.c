@@ -10,7 +10,7 @@
 #include "util.h"
 
 enum opt_id {
-    OPT_OUTPUT, OPT_RESUME, OPT_FORCE, OPT_FAST, OPT_GAP, OPT_BLOCK, OPT_PROFILE, OPT_JOBS,
+    OPT_OUTPUT, OPT_FILE, OPT_RESUME, OPT_FORCE, OPT_FAST, OPT_GAP, OPT_BLOCK, OPT_PROFILE, OPT_JOBS,
     OPT_SERIAL, OPT_ONE_FS, OPT_NDEST, OPT_IGNORE_LOCK, OPT_QUIET, OPT_HELP, OPT_VERSION
 };
 
@@ -23,6 +23,7 @@ struct optdef {
 
 static const struct optdef optdefs[] = {
     { 'o', "output", 1, OPT_OUTPUT },
+    { 0, "file", 0, OPT_FILE },
     { 0, "resume", 0, OPT_RESUME },
     { 0, "force", 0, OPT_FORCE },
     { 'f', "fast", 0, OPT_FAST },
@@ -51,6 +52,7 @@ static const char *const help_lines[] = {
     "Options (they may appear before, between or after the paths):",
     "  -o, --output DIR        Existing directory where DIR/results.hashdiff/ is created",
     "                          (default: .)",
+    "      --file              ORIGIN and the destinations are files, not directories",
     "      --resume            If results.hashdiff exists, resume the interrupted run",
     "                          without asking",
     "      --force             If results.hashdiff exists, discard it and start over",
@@ -162,6 +164,9 @@ static int apply(const struct optdef *d, const char *val, struct hd_opts *o, str
     case OPT_OUTPUT:
         free(o->output);
         o->output = xstrdup(val);
+        break;
+    case OPT_FILE:
+        o->file_mode = 1;
         break;
     case OPT_RESUME:
         o->resume = 1;
@@ -376,6 +381,12 @@ static int parse_args(int argc, char **argv, struct hd_opts *o)
         usage_error("--resume and --force cannot be used together", NULL);
         return OPTS_ERROR;
     }
+    if (o->file_mode) {
+        if (o->one_fs)
+            hd_warn("-x has no effect with --file: nothing is traversed");
+        if (o->jobs > 1)
+            hd_warn("--jobs has no effect with --file: a side has a single entry");
+    }
     if (!o->fast) {
         if (seen.gap)
             hd_warn("--gap has no effect without --fast");
@@ -408,6 +419,7 @@ int opts_parse(int argc, char **argv, struct hd_opts *o)
     o->ndest = 0;
     o->ndest_check = 0;
     o->output = NULL;
+    o->file_mode = 0;
     o->resume = 0;
     o->force = 0;
     o->ignore_lock = 0;

@@ -16,6 +16,7 @@ struct hd_opts {
     int ndest;
     int ndest_check;     /* --number-of-destinations, or 0 if it was not given */
     char *output;        /* cleaned absolute directory where results.hashdiff is created */
+    int file_mode;       /* --file: the paths are regular files (section 2.3) */
     int resume;
     int force;
     int ignore_lock;

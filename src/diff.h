@@ -51,6 +51,13 @@ struct hd_names {
     char diff_files[48];        /* diff-files[-DEST].txt */
     char rsync_list[48];        /* rsync-files[-DEST].lst */
     char rsync_command[48];     /* rsync-command[-DEST].txt */
+    /*
+     * --file (section 2.3): the two entries are compared by position and not by name, no
+     * rsync list is written, and the command names the two files instead of their directories.
+     */
+    int file_mode;
+    const char *origin_path;
+    const char *dest_path;
 };
 
 /* Counts the records of a tree-diff or diff-files file per status, 0 if it does not exist,
@@ -71,7 +78,8 @@ void tree_excluded(const char *results, const char *name, const char *abs_root,
                    char ***excluded, size_t *nexcluded);
 
 /* Builds the suggested synchronization command of the tree stage; empty if none. */
-void suggest_command(struct hd_buf *out, const struct hd_counts *c, const char *abs_origin,
+void suggest_command(struct hd_buf *out, const struct hd_names *n,
+                     const struct hd_counts *c, const char *abs_origin,
                      const char *abs_destination, int one_fs, char **excluded,
                      size_t nexcluded);
 

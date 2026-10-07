@@ -46,7 +46,10 @@ struct side {
     struct hd_names names;      /* the files of this side (section 3) */
     const char *resume_source;  /* resume: journal of the interrupted run, or NULL */
     unsigned long changes;      /* resume: differences with the saved tree */
-    const char *root;           /* cleaned absolute path (section 2.1) */
+    const char *path;           /* cleaned absolute path as given (section 2.1) */
+    const char *root;           /* the tree, or the file's parent directory with --file */
+    const char *entry;          /* --file: the file's name inside root (section 2.3) */
+    char *parent;               /* --file: owns root */
     struct os_stat st;
     long pid;
     int to_child;               /* parent's end of the parent -> child pipe */
@@ -70,6 +73,23 @@ static int side_failed;         /* a destination process failed: exit 2 (section
  * Side names and file names (sections 2.2 and 3). With one destination every name is the one
  * version 1.1 used, so a single-destination run writes exactly the files it wrote before.
  */
+/* Section 2.3: a side's root is the file's parent directory and its list is the file's name. */
+static void split_file(struct side *s)
+{
+    const char *slash = strrchr(s->path, '/');
+    size_t n = (size_t)(slash - s->path);
+
+    s->parent = xmalloc(n + 2);
+    if (n == 0) {
+        strcpy(s->parent, "/");
+    } else {
+        memcpy(s->parent, s->path, n);
+        s->parent[n] = '\0';
+    }
+    s->root = s->parent;
+    s->entry = slash + 1;
+}
+
 static void setup_sides(const struct hd_opts *o)
 {
     int i;
@@ -81,7 +101,7 @@ static void setup_sides(const struct hd_opts *o)
 
         if (i == 0) {
             s->name = "origin";
-            s->root = o->origin;
+            s->path = o->origin;
             strcpy(s->role, "ORIGIN");
             strcpy(s->what, "ORIGIN tree");
         } else {
@@ -95,10 +115,18 @@ static void setup_sides(const struct hd_opts *o)
                 sprintf(s->role, "DESTINATION-%d", i);
                 sprintf(s->what, "%s tree", s->label);
             }
-            s->root = o->dest[i - 1];
+            s->path = o->dest[i - 1];
         }
+        s->root = s->path;
+        s->entry = NULL;
+        s->parent = NULL;
+        if (o->file_mode)
+            split_file(s);
         sprintf(s->names.tree, "tree-%s.txt", s->name);
         sprintf(s->names.hashes, "hashes-%s.txt", s->name);
+        s->names.file_mode = o->file_mode;
+        s->names.origin_path = sides[0].path;
+        s->names.dest_path = s->path;
         if (i == 0)
             continue;
         if (ndest == 1) {
@@ -121,6 +149,26 @@ static void stat_dir(const char *what, const char *path, struct os_stat *st)
         hd_die("cannot access %s '%s': %s", what, path, strerror(errno));
     if (st->kind != OS_DIR)
         hd_die("%s '%s' is not a directory", what, path);
+}
+
+/* A root of the run; with --file it is a regular file instead (section 2.3). */
+static void stat_root(const char *role, const char *path, struct os_stat *st, int file_mode)
+{
+    if (os_stat(path, st) != 0)
+        hd_die("cannot access %s '%s': %s", role, path, strerror(errno));
+    if (file_mode) {
+        if (st->kind == OS_REG)
+            return;
+        if (st->kind == OS_DIR)
+            hd_die("%s '%s' is a directory, not a file; drop --file", role, path);
+        hd_die("%s '%s' is not a regular file", role, path);
+    }
+    if (st->kind == OS_DIR)
+        return;
+    /* --file is only suggested for a regular file: it would not help a FIFO or a device. */
+    if (st->kind == OS_REG)
+        hd_die("%s '%s' is a file, not a directory; use --file to compare files", role, path);
+    hd_die("%s '%s' is not a directory", role, path);
 }
 
 static void remove_file(const char *dir, const char *name, const char *suffix)
@@ -272,7 +320,7 @@ static int prepare_results(const char *results, const struct hd_opts *o,
         runstate_clean(results);
         return 0;
     }
-    state = runstate_inspect(results, o->output, roles, nsides, 0, &rs);
+    state = runstate_inspect(results, o->output, roles, nsides, o->file_mode, &rs);
     /* Nothing was hashed, so there is nothing to decide, even with a flag (section 3.3). */
     if (state == RUNSTATE_FRESH) {
         runstate_clean(results);
@@ -352,7 +400,10 @@ static void run_child(struct side *s, int in_fd, int out_fd, const char *results
     wo.one_fs = o->one_fs;
     wo.excludes = excl;
     wo.nexcludes = nexcl;
-    walk_tree(s->root, &wo, &list);
+    if (o->file_mode)
+        walk_file(s->root, s->entry, &list);
+    else
+        walk_tree(s->root, &wo, &list);
     if (os_caught_signal())
         hd_exit(128 + os_caught_signal());
     list_sort(&list);
@@ -674,7 +725,11 @@ static void tree_stage_messages(const struct side *s)
     const char *who = ndest == 1 ? "DESTINATION" : s->name;
     const char *file = s->names.tree_diff;
 
-    if (ndest == 1)
+    if (s->names.file_mode)
+        fprintf(stderr, "hashdiff: ORIGIN and %s differ in size or type; nothing was hashed. "
+                "See %s,\nfix the difference (for example with the suggested rsync command) "
+                "and run hashdiff again.\n", who, file);
+    else if (ndest == 1)
         fputs("hashdiff: ORIGIN and DESTINATION trees differ; nothing was hashed. See "
               "tree-diff.txt,\nfix the differences (for example with the suggested rsync "
               "command) and run hashdiff\nagain.\n", stderr);
@@ -900,12 +955,13 @@ int main(int argc, char **argv)
         return 2;
     setup_sides(&o);
     for (i = 0; i < nsides; i++)
-        stat_dir(sides[i].role, sides[i].root, &sides[i].st);
+        stat_root(sides[i].role, sides[i].path, &sides[i].st, o.file_mode);
     /* Every two roots must be a different directory (section 2.2). */
     for (i = 0; i < nsides; i++) {
         for (j = i + 1; j < nsides; j++) {
             if (sides[i].st.dev == sides[j].st.dev && sides[i].st.ino == sides[j].st.ino)
-                hd_die("%s and %s are the same directory", sides[i].role, sides[j].role);
+                hd_die("%s and %s are the same %s", sides[i].role, sides[j].role,
+                       o.file_mode ? "file" : "directory");
         }
     }
     stat_dir("output directory", o.output, &sout);
@@ -935,7 +991,7 @@ int main(int argc, char **argv)
          * keeps the paths.txt of the run it continues and adds no history block: it is the
          * same run, already recorded.
          */
-        runstate_write_paths(results, hashopts.started, 0, roles, nsides);
+        runstate_write_paths(results, hashopts.started, o.file_mode, roles, nsides);
     }
 
     /* Tree stage: with --serial, one side at a time, in command-line order. */
@@ -1009,8 +1065,9 @@ int main(int argc, char **argv)
                                                  sides[i].root, &sides[i].counts,
                                                  &sides[i].cmd, &sides[i].diff_out);
             else
-                suggest_command(&sides[i].cmd, &sides[i].counts, sides[0].root,
-                                sides[i].root, o.one_fs, excluded, nexcluded);
+                suggest_command(&sides[i].cmd, &sides[i].names, &sides[i].counts,
+                                sides[0].root, sides[i].root, o.one_fs, excluded,
+                                nexcluded);
         }
         check_interrupted();
         status = finish_run(results, &o, started, nhash > 0);
@@ -1021,6 +1078,8 @@ int main(int argc, char **argv)
     for (k = 0; k < nexcluded; k++)
         free(excluded[k]);
     free(excluded);
+    for (i = 0; i < nsides; i++)
+        free(sides[i].parent);
     free(results);
     buf_free(&mode);
     opts_free(&o);
