@@ -724,7 +724,8 @@ All jobs: checkout, build `all testhook`, install tests/requirements.txt, run `m
                     test deps installed in a venv and passed via PYTHON=. Runs as root, so
                     permission tests are skipped (expected).
     macos           macos-latest, CC=clang, CFLAGS_EXTRA=-Werror
-    freebsd         ubuntu-latest + vmactions/freebsd-vm; pkg install gmake python3 rsync;
+    freebsd         ubuntu-latest + vmactions/freebsd-vm; pkg install gmake python3 rsync rust
+                    (hypothesis has no FreeBSD wheel and builds with Rust);
                     build with gmake CC=cc CFLAGS_EXTRA=-Werror; test deps in a venv.
 
 - Python via actions/setup-python on Ubuntu and macOS (3.12), from packages on Alpine and
