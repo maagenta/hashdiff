@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "diff.h"
 #include "hasher.h"
 #include "md5.h"
 #include "os.h"
@@ -27,6 +28,8 @@ void stats_init(struct hd_stats *st)
     st->samples = 0;
     st->sample_bytes = 0;
     st->sampled_total = 0;
+    st->reused = 0;
+    st->last_check = 0;
 }
 
 /* ---- hashing of one entry ---- */
@@ -266,12 +269,15 @@ static void hash_entry(struct hasher *h, const char *root, const struct hd_entry
     free(path);
 }
 
-/* Estimated cost of an entry: bytes the plan will read plus one seek. */
-static off_t entry_cost(const struct hd_entry *e, const struct hd_hashopts *o)
+/* Estimated cost of an entry: bytes the plan will read plus one seek; 0 if reused. */
+static off_t entry_cost(const struct hd_entry *e, const struct hd_result *res,
+                        const struct hd_hashopts *o)
 {
     struct hd_plan plan;
     off_t bytes = 0, cost;
 
+    if (res->type != RES_NONE)
+        return 0;
     if (e->type == ENT_FILE) {
         plan.sampled = 0;
         plan.n = e->size;
@@ -296,6 +302,8 @@ struct side_state {
     struct hd_buf line;
     struct hd_stats *st;
     long last_tick;
+    size_t check_idx;           /* resume: entry of the last kept line, or (size_t)-1 */
+    struct hd_result old_last;  /* resume: the last kept line */
 };
 
 static void format_line(struct hd_buf *b, const char *path, const struct hd_result *r)
@@ -363,6 +371,33 @@ static void count_result(struct hd_stats *st, const struct hd_result *r)
     }
 }
 
+static void write_prefix(struct side_state *s)
+{
+    while (s->next_write < s->list->count && s->res[s->next_write].type != RES_NONE) {
+        format_line(&s->line, s->list->items[s->next_write].path, &s->res[s->next_write]);
+        outfile_write(&s->out, s->line.data, s->line.len);
+        s->next_write++;
+    }
+}
+
+static int same_result(const struct hd_result *a, const struct hd_result *b)
+{
+    if (a->type != b->type)
+        return 0;
+    if (a->type == RES_ERROR)
+        return a->err == b->err;
+    return a->size == b->size && memcmp(a->md5, b->md5, 16) == 0;
+}
+
+static void count_samples(struct side_state *s, const struct hd_result *r, off_t samples)
+{
+    if (r->type == RES_SAMPLED) {
+        s->st->samples += samples;
+        s->st->sample_bytes += samples * s->opts->block;
+        s->st->sampled_total += r->size;
+    }
+}
+
 /* Stores a result and writes every entry of the journal's prefix that is now complete. */
 static void store_result(struct side_state *s, size_t idx, const struct hd_result *r,
                          off_t samples)
@@ -370,28 +405,117 @@ static void store_result(struct side_state *s, size_t idx, const struct hd_resul
     s->res[idx] = *r;
     s->done++;
     count_result(s->st, r);
-    if (r->type == RES_SAMPLED) {
-        s->st->samples += samples;
-        s->st->sample_bytes += samples * s->opts->block;
-        s->st->sampled_total += r->size;
+    count_samples(s, r, samples);
+    if (idx == s->check_idx) {
+        if (same_result(r, &s->old_last)) {
+            s->st->last_check = 1;
+        } else {
+            struct hd_buf b;
+
+            s->st->last_check = 2;
+            buf_init(&b);
+            hd_escape(&b, s->list->items[idx].path);
+            fprintf(stderr, "[%s] resume: last entry changed, re-hashed: %s\n", s->name,
+                    b.data);
+            buf_free(&b);
+        }
     }
-    while (s->next_write < s->list->count && s->res[s->next_write].type != RES_NONE) {
-        format_line(&s->line, s->list->items[s->next_write].path, &s->res[s->next_write]);
-        outfile_write(&s->out, s->line.data, s->line.len);
-        s->next_write++;
-    }
+    write_prefix(s);
     side_tick(s);
 }
 
+/* Is a hashes line of this type possible for an entry of the traversal? */
+static int compatible(const struct hd_entry *e, char type)
+{
+    if (type == RES_ERROR)
+        return 1;
+    if (e->type == ENT_FILE)
+        return type == RES_FULL || type == RES_SAMPLED;
+    return e->type == ENT_LINK && type == RES_LINK;
+}
+
+/*
+ * Loads the valid prefix of the journal of an interrupted run: complete, well-formed lines
+ * whose paths are the entries of the list in order. Returns the number of kept lines.
+ */
+static size_t load_kept(struct side_state *s, const char *results, const char *source)
+{
+    char *path = hd_path_join(results, source);
+    struct hd_reader rd;
+    struct hd_record rec;
+    size_t n = 0;
+    int headers = 0;
+
+    if (reader_open(&rd, path) != 0) {
+        free(path);
+        return 0;
+    }
+    record_init(&rec);
+    while (reader_next(&rd) == 1 && rd.complete) {
+        const struct hd_entry *e;
+        struct hd_result *r;
+
+        if (headers < 3) {
+            headers++;
+            continue;
+        }
+        if (n == s->list->count)
+            break;
+        e = &s->list->items[n];
+        if (record_parse(FMT_HASHES, rd.line.data, rd.line.len, &rec) != 0
+            || strcmp(rec.path.data, e->path) != 0 || !compatible(e, rec.type))
+            break;
+        r = &s->res[n];
+        r->type = rec.type;
+        r->err = rec.type == RES_ERROR ? (int)rec.num : 0;
+        r->size = rec.type == RES_ERROR ? 0 : rec.num;
+        if (rec.type != RES_ERROR)
+            hex_to_md5(rec.hash, r->md5);
+        n++;
+    }
+    record_free(&rec);
+    reader_close(&rd);
+    free(path);
+    return n;
+}
+
+/* Number of samples of a reused S line, from its plan. */
+static off_t plan_samples(const struct hd_hashopts *o, off_t n)
+{
+    struct hd_plan plan;
+
+    plan_make(n, o->gap, o->block, o->seek_bytes, &plan);
+    return plan.sampled ? plan.k : 0;
+}
+
+/* Reuses the kept lines except the last one, which is hashed again. */
+static void reuse_kept(struct side_state *s, size_t kept)
+{
+    size_t i;
+
+    if (kept == 0)
+        return;
+    s->check_idx = kept - 1;
+    s->old_last = s->res[kept - 1];
+    s->res[kept - 1].type = RES_NONE;
+    for (i = 0; i + 1 < kept; i++) {
+        count_result(s->st, &s->res[i]);
+        count_samples(s, &s->res[i], s->res[i].type == RES_SAMPLED
+                                     ? plan_samples(s->opts, s->res[i].size) : 0);
+    }
+    s->done = kept - 1;
+    s->st->reused = (unsigned long)(kept - 1);
+}
+
 /* Consecutive chunks of about total / (64 x jobs) estimated cost; returns their count. */
-static size_t make_chunks(const struct hd_list *l, const struct hd_hashopts *o,
-                          size_t **starts)
+static size_t make_chunks(const struct hd_list *l, const struct hd_result *res,
+                          const struct hd_hashopts *o, size_t **starts)
 {
     off_t total = 0, target, acc = 0, c;
     size_t i, n = 0;
 
     for (i = 0; i < l->count; i++) {
-        c = entry_cost(&l->items[i], o);
+        c = entry_cost(&l->items[i], &res[i], o);
         total = hd_off_add(total, c, &total) == 0 ? total : HD_OFF_MAX;
     }
     target = total / ((off_t)CHUNKS_PER_JOB * o->jobs);
@@ -401,7 +525,7 @@ static size_t make_chunks(const struct hd_list *l, const struct hd_hashopts *o,
     for (i = 0; i < l->count; i++) {
         if (acc == 0)
             (*starts)[n++] = i;
-        c = entry_cost(&l->items[i], o);
+        c = entry_cost(&l->items[i], &res[i], o);
         if (hd_off_add(acc, c, &acc) != 0 || acc >= target)
             acc = 0;
     }
@@ -466,6 +590,8 @@ static void hash_serial(struct side_state *s, const size_t *starts, size_t nchun
         for (i = 0; i < n && !os_caught_signal(); i++) {
             struct hd_result r;
 
+            if (s->res[order[i]].type != RES_NONE)
+                continue;       /* reused from the interrupted run */
             hash_entry(&h, s->root, &l->items[order[i]], &r);
             s->st->bytes_read = sc.base + h.bytes_read;
             if (r.type == RES_NONE)
@@ -540,6 +666,8 @@ static void run_worker(const struct side_state *s, const size_t *starts, size_t 
 
             if (os_caught_signal())
                 os_exit_now(128 + os_caught_signal());
+            if (s->res[i].type != RES_NONE)
+                continue;       /* reused from the interrupted run */
             memset(&rec, 0, sizeof(rec));
             hash_entry(&w.h, s->root, &l->items[i], &rec.r);
             if (rec.r.type == RES_NONE)
@@ -609,7 +737,7 @@ static void hash_parallel(struct side_state *s, const size_t *starts, size_t nch
 
 int hash_side(const char *root, const struct hd_list *l, const char *results,
               const char *side, const char *abs_root, const struct hd_hashopts *opts,
-              struct hd_stats *st)
+              const char *resume_source, struct hd_stats *st)
 {
     struct side_state s;
     size_t *starts, nchunks, i;
@@ -627,10 +755,16 @@ int hash_side(const char *root, const struct hd_list *l, const char *results,
     s.done = 0;
     s.st = st;
     s.last_tick = 0;
+    s.check_idx = (size_t)-1;
     st->ignored = l->ignored;
 
     sprintf(name, "hashes-%s.txt", side);
-    outfile_open(&s.out, results, name);
+    if (resume_source != NULL) {
+        reuse_kept(&s, load_kept(&s, results, resume_source));
+        outfile_open_suffix(&s.out, results, name, ".new");
+    } else {
+        outfile_open(&s.out, results, name);
+    }
     buf_init(&s.line);
     buf_append_str(&s.line, "# hashdiff-format: 2\n# root: ");
     hd_escape(&s.line, abs_root);
@@ -638,8 +772,16 @@ int hash_side(const char *root, const struct hd_list *l, const char *results,
     buf_append_str(&s.line, opts->mode_line);
     buf_append_char(&s.line, '\n');
     outfile_write(&s.out, s.line.data, s.line.len);
+    if (resume_source != NULL) {
+        /* The new journal holds everything the old one had: it replaces it. */
+        write_prefix(&s);
+        outfile_flush(&s.out);
+        outfile_rename_tmp(&s.out, ".tmp");
+        if (strcmp(resume_source, name) == 0 && os_unlink(s.out.path) != 0)
+            hd_die("cannot remove '%s': %s", s.out.path, strerror(errno));
+    }
 
-    nchunks = make_chunks(l, opts, &starts);
+    nchunks = make_chunks(l, s.res, opts, &starts);
     if (opts->jobs > 1 && l->count > 0)
         hash_parallel(&s, starts, nchunks);
     else

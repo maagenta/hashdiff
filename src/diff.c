@@ -2,6 +2,7 @@
 #include "config.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -495,4 +496,149 @@ void diff_hashes(const char *results, const char *abs_results, const char *abs_o
         outfile_write(&command, "\n", 1);
     }
     outfile_commit(&command);
+}
+
+void hex_to_md5(const char *hex, unsigned char md5[16])
+{
+    int i;
+
+    for (i = 0; i < 16; i++) {
+        int hi = hex[2 * i] <= '9' ? hex[2 * i] - '0' : hex[2 * i] - 'a' + 10;
+        int lo = hex[2 * i + 1] <= '9' ? hex[2 * i + 1] - '0' : hex[2 * i + 1] - 'a' + 10;
+
+        md5[i] = (unsigned char)(hi * 16 + lo);
+    }
+}
+
+static void resume_fail(const char *path, const char *why)
+{
+    hd_die("cannot resume: '%s' %s; use --force to start over", path, why);
+}
+
+/* Reads one header line; returns 0 if there is a complete line. */
+static int header_line(struct hd_reader *rd)
+{
+    return reader_next(rd) == 1 && rd->complete ? 0 : -1;
+}
+
+static int root_matches(const struct hd_buf *line, const char *abs_root)
+{
+    const char *v = header_value(line, "root");
+    struct hd_buf root;
+    int ok;
+
+    if (v == NULL)
+        return 0;
+    buf_init(&root);
+    ok = hd_unescape(&root, v, strlen(v)) == 0 && root.data != NULL
+         && strcmp(root.data, abs_root) == 0;
+    buf_free(&root);
+    return ok;
+}
+
+void resume_check_tree(const char *results, const char *name, const char *abs_root)
+{
+    char *path = hd_path_join(results, name);
+    struct hd_reader rd;
+
+    if (reader_open(&rd, path) != 0)
+        resume_fail(path, "cannot be read");
+    if (header_line(&rd) != 0 || strcmp(rd.line.data, "# hashdiff-tree: 1") != 0)
+        resume_fail(path, "is not a valid tree file");
+    if (header_line(&rd) != 0 || !root_matches(&rd.line, abs_root))
+        resume_fail(path, "belongs to another root");
+    reader_close(&rd);
+    free(path);
+}
+
+int resume_check_hashes(const char *results, const char *name, const char *abs_root,
+                        const char *mode_line)
+{
+    char *path = hd_path_join(results, name);
+    struct hd_reader rd;
+    const char *v;
+    int r = 0;
+
+    if (reader_open(&rd, path) != 0) {
+        free(path);
+        return 1;
+    }
+    if (header_line(&rd) != 0 || strcmp(rd.line.data, "# hashdiff-format: 2") != 0)
+        r = 1;
+    else if (header_line(&rd) != 0)
+        r = 1;
+    else if (!root_matches(&rd.line, abs_root))
+        resume_fail(path, "belongs to another root");
+    else if (header_line(&rd) != 0 || (v = header_value(&rd.line, "mode")) == NULL)
+        r = 1;
+    else if (strcmp(v, mode_line) != 0)
+        resume_fail(path, "was made with other parameters (its '# mode:' line differs)");
+    reader_close(&rd);
+    free(path);
+    return r;
+}
+
+/* Saved tree entry vs current one: equal on type, size (errno) and mtime. */
+static int tree_entry_equal(const struct hd_record *r, const struct hd_entry *e)
+{
+    if (r->type != e->type)
+        return 0;
+    if (e->type == ENT_ERROR)
+        return r->num == (off_t)e->err;
+    return r->num == e->size && r->mtime == e->mtime;
+}
+
+static void change_line(FILE *f, struct hd_buf *b, const char *status, const char *path,
+                        const char *part)
+{
+    buf_clear(b);
+    buf_append_str(b, status);
+    buf_append_char(b, ' ');
+    hd_escape(b, path);
+    buf_append_char(b, '\n');
+    if (fwrite(b->data, 1, b->len, f) != b->len)
+        hd_die("cannot write '%s': %s", part, strerror(errno));
+}
+
+unsigned long tree_changes(const char *results, const char *tree_name, const char *abs_root,
+                           const struct hd_list *l, const char *part_name)
+{
+    struct stream saved;
+    struct hd_buf line;
+    char *part = hd_path_join(results, part_name);
+    FILE *f = fopen(part, "wb");
+    unsigned long changes = 0;
+    size_t i = 0;
+
+    if (f == NULL)
+        hd_die("cannot write '%s': %s", part, strerror(errno));
+    buf_init(&line);
+    stream_open(&saved, results, tree_name, FMT_TREE, abs_root);
+    while (saved.has || i < l->count) {
+        int c = !saved.has ? 1 : i == l->count ? -1
+                : strcmp(saved.cur.path.data, l->items[i].path);
+
+        if (c < 0) {
+            change_line(f, &line, "DELETED", saved.cur.path.data, part);
+            stream_next(&saved);
+        } else if (c > 0) {
+            change_line(f, &line, "ADDED", l->items[i].path, part);
+            i++;
+        } else {
+            if (!tree_entry_equal(&saved.cur, &l->items[i])) {
+                change_line(f, &line, "CHANGED", l->items[i].path, part);
+                changes++;
+            }
+            stream_next(&saved);
+            i++;
+            continue;
+        }
+        changes++;
+    }
+    stream_close(&saved);
+    buf_free(&line);
+    if (fclose(f) != 0)
+        hd_die("cannot write '%s': %s", part, strerror(errno));
+    free(part);
+    return changes;
 }

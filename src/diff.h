@@ -6,6 +6,7 @@
 #include <sys/types.h>
 
 #include "util.h"
+#include "walk.h"
 
 /* Line formats. */
 #define FMT_TREE 1
@@ -51,5 +52,20 @@ void suggest_command(struct hd_buf *out, const struct hd_counts *c, const char *
  * command is also returned in *cmd (empty if there is nothing to copy). */
 void diff_hashes(const char *results, const char *abs_results, const char *abs_origin,
                  const char *abs_destination, struct hd_counts *c, struct hd_buf *cmd);
+
+/* Parses 32 lowercase hex digits into a digest. */
+void hex_to_md5(const char *hex, unsigned char md5[16]);
+
+/* Resume (section 3.2). Checks the header of a saved tree file: missing, unreadable or of
+ * another root is fatal. */
+void resume_check_tree(const char *results, const char *name, const char *abs_root);
+/* Checks the header of a hashes source: returns 0 if valid, 1 if missing or cut short (no
+ * source); a different root or mode is fatal. */
+int resume_check_hashes(const char *results, const char *name, const char *abs_root,
+                        const char *mode_line);
+/* Compares a saved tree file with the current sorted list on every field; writes ADDED,
+ * DELETED and CHANGED lines to DIR/part_name and returns their number. */
+unsigned long tree_changes(const char *results, const char *tree_name, const char *abs_root,
+                           const struct hd_list *list, const char *part_name);
 
 #endif

@@ -91,6 +91,11 @@ struct hd_outfile {
 };
 
 void outfile_open(struct hd_outfile *o, const char *dir, const char *name);
+/* Like outfile_open, but the temporary file is NAME + suffix (e.g. ".new"). */
+void outfile_open_suffix(struct hd_outfile *o, const char *dir, const char *name,
+                         const char *suffix);
+/* Renames the temporary file to NAME + suffix while it stays open for writing. */
+void outfile_rename_tmp(struct hd_outfile *o, const char *suffix);
 void outfile_write(struct hd_outfile *o, const void *data, size_t n);
 void outfile_flush(struct hd_outfile *o);
 void outfile_commit(struct hd_outfile *o);

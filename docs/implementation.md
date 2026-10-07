@@ -651,9 +651,11 @@ uninterrupted run with --force on the same trees.
 21. Prompt through a pseudo-terminal (os.openpty for stdin and stderr): `a` → exit 2 and
     nothing is touched; `o` → starts over; `r` → resumes; an invalid answer repeats the
     question.
-22. Real interruption, with -j 1 and -j 4: SIGINT once the journal has some lines (tree of
-    ~2000 files of 64 KiB) → exit 130, `hashes-*.txt.tmp` kept; then --resume → identical.
-    Skip with a reason if the run finishes before the signal is delivered.
+22. Real interruption, with -j 1 and -j 4: SIGINT once the journal has some lines → exit
+    130, `hashes-*.txt.tmp` kept; then --resume → identical. The tree is 50 small files and
+    then a 2 GiB sparse file that takes seconds to read (small files alone are read from the
+    page cache too fast to interrupt reliably). Skip with a reason if the filesystem has no
+    sparse files or the run finishes before the signal is delivered.
 
 Sanitizers:
 16. `make asan` followed by `make test` passes (the binaries under test are the ASan builds).

@@ -33,6 +33,8 @@ struct hd_stats {
     off_t samples;              /* S files: number of samples, sample bytes, total size */
     off_t sample_bytes;
     off_t sampled_total;
+    unsigned long reused;       /* resume: lines reused without reading the file */
+    int last_check;             /* resume: 0 none, 1 last kept line verified, 2 re-hashed */
 };
 
 void stats_init(struct hd_stats *st);
@@ -54,9 +56,12 @@ struct hd_hashopts {
  * Hashes a sorted list into DIR/hashes-SIDE.txt (written as a journal in canonical order and
  * renamed when complete) and fills the statistics. Returns 0, or the number of the signal
  * that interrupted it; the journal is then kept as hashes-SIDE.txt.tmp.
+ *
+ * resume_source names the journal of an interrupted run in DIR (or NULL): its valid prefix
+ * is reused, except its last line, which is hashed again (section 3.2).
  */
 int hash_side(const char *root, const struct hd_list *list, const char *results,
               const char *side, const char *abs_root, const struct hd_hashopts *opts,
-              struct hd_stats *st);
+              const char *resume_source, struct hd_stats *st);
 
 #endif

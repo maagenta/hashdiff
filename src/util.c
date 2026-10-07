@@ -450,15 +450,38 @@ static void outfile_fail(struct hd_outfile *o)
     hd_die("cannot write '%s': %s", o->tmp, strerror(errno));
 }
 
-void outfile_open(struct hd_outfile *o, const char *dir, const char *name)
+static char *with_suffix(const char *path, const char *suffix)
+{
+    char *p = xmalloc(strlen(path) + strlen(suffix) + 1);
+
+    strcpy(p, path);
+    strcat(p, suffix);
+    return p;
+}
+
+void outfile_open_suffix(struct hd_outfile *o, const char *dir, const char *name,
+                         const char *suffix)
 {
     o->path = hd_path_join(dir, name);
-    o->tmp = xmalloc(strlen(o->path) + 5);
-    strcpy(o->tmp, o->path);
-    strcat(o->tmp, ".tmp");
+    o->tmp = with_suffix(o->path, suffix);
     o->f = fopen(o->tmp, "wb");
     if (o->f == NULL)
         outfile_fail(o);
+}
+
+void outfile_open(struct hd_outfile *o, const char *dir, const char *name)
+{
+    outfile_open_suffix(o, dir, name, ".tmp");
+}
+
+void outfile_rename_tmp(struct hd_outfile *o, const char *suffix)
+{
+    char *to = with_suffix(o->path, suffix);
+
+    if (os_rename(o->tmp, to) != 0)
+        hd_die("cannot rename '%s' to '%s': %s", o->tmp, to, strerror(errno));
+    free(o->tmp);
+    o->tmp = to;
 }
 
 void outfile_write(struct hd_outfile *o, const void *data, size_t n)
