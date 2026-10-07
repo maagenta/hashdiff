@@ -8,8 +8,8 @@ def usage_error(stderr):
 
 def test_version(run_hashdiff):
     code, out, err = run_hashdiff("--version")
-    assert (code, out, err) == (0, b"hashdiff 1.0\n", b"")
-    assert run_hashdiff("-V")[:2] == (0, b"hashdiff 1.0\n")
+    assert (code, out, err) == (0, b"hashdiff 1.1\n", b"")
+    assert run_hashdiff("-V")[:2] == (0, b"hashdiff 1.1\n")
 
 
 def test_help(run_hashdiff):
