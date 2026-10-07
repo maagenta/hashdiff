@@ -126,13 +126,13 @@ static void walk_dir(const char *root, const char *rel, const struct walk_opts *
             ex = find_exclude(wo, &st);
             if (ex != NULL) {
                 hd_warn("%s: skipping '%s' (%s)", wo->side, crel, ex->what);
-                l->excluded = xrealloc((void *)l->excluded,
+                l->excluded = xrealloc(l->excluded,
                                        (l->nexcluded + 1) * sizeof(*l->excluded));
                 l->excluded[l->nexcluded++] = crel;
             } else if (!wo->one_fs || st.dev == root_dev) {
                 if (*depth == *stack_cap) {
                     *stack_cap = *stack_cap ? *stack_cap * 2 : 64;
-                    *stack = xrealloc((void *)*stack, *stack_cap * sizeof(**stack));
+                    *stack = xrealloc(*stack, *stack_cap * sizeof(**stack));
                 }
                 (*stack)[(*depth)++] = crel;
             }
@@ -162,7 +162,7 @@ void walk_tree(const char *root, const struct walk_opts *wo, struct hd_list *l)
 
         walk_dir(root, rel, wo, st.dev, l, &stack, &depth, &stack_cap);
     }
-    free((void *)stack);
+    free(stack);
 }
 
 static int cmp_entry_path(const void *a, const void *b)
@@ -180,7 +180,7 @@ void list_sort(struct hd_list *l)
 void list_free(struct hd_list *l)
 {
     free(l->items);
-    free((void *)l->excluded);
+    free(l->excluded);
     arena_free(&l->arena);
     list_init(l);
 }

@@ -58,6 +58,7 @@ void plan_make(off_t n, off_t gap, off_t block, off_t seek_bytes, struct hd_plan
     p->k = k;
 }
 
+/* A sampled plan has k >= 2 (rule 1 rejects N <= 2B), so k - 1 is never zero. */
 void plan_iter_init(struct hd_plan_iter *it, const struct hd_plan *p)
 {
     off_t span = p->n - p->block;

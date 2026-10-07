@@ -498,6 +498,7 @@ void diff_hashes(const char *results, const char *abs_results, const char *abs_o
     outfile_commit(&command);
 }
 
+/* The 32 characters must be lowercase hex, as record_parse checks them (section 3.2). */
 void hex_to_md5(const char *hex, unsigned char md5[16])
 {
     int i;

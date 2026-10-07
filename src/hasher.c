@@ -684,7 +684,8 @@ static void run_worker(const struct side_state *s, const size_t *starts, size_t 
 /* -j N: N workers hash chunks k, k + N, ...; the side process stores their records. */
 static void hash_parallel(struct side_state *s, const size_t *starts, size_t nchunks)
 {
-    int jobs = s->opts->jobs, k, fds[2], code, sig, failed = 0, forwarded = 0;
+    int jobs = s->opts->jobs, k, fds[2], code, sig, forwarded = 0;
+    int failed = -1, failed_code = 0, failed_sig = 0;
     long *pids = xmalloc((size_t)jobs * sizeof(*pids));
     struct worker_rec rec;
 
@@ -720,19 +721,31 @@ static void hash_parallel(struct side_state *s, const size_t *starts, size_t nch
         if (n != (ssize_t)sizeof(rec))
             hd_die("truncated record from a worker");
         s->st->bytes_read += rec.bytes;
-        if (rec.kind == REC_RESULT && rec.index < s->list->count)
+        if (rec.kind == REC_RESULT) {
+            if (rec.index >= s->list->count)
+                hd_die("invalid record from a %s worker", s->name);
             store_result(s, (size_t)rec.index, &rec.r, rec.samples);
-        else
+        } else {
             side_tick(s);
+        }
     }
     os_close(fds[0]);
     for (k = 0; k < jobs; k++) {
-        if (os_wait(pids[k], &code, &sig) != 0 || (code != 0 && !os_caught_signal()))
-            failed = 1;
+        if (os_wait(pids[k], &code, &sig) != 0)
+            hd_die("cannot wait for a %s worker: %s", s->name, strerror(errno));
+        /* The first failure names the worker; an exit after a caught signal is not one. */
+        if (failed < 0 && code != 0 && !os_caught_signal()) {
+            failed = k;
+            failed_code = code;
+            failed_sig = sig;
+        }
     }
     free(pids);
-    if (failed)
-        hd_die("a %s worker process failed", s->name);
+    if (failed >= 0) {
+        if (failed_code < 0)
+            hd_die("the %s worker %d was killed by signal %d", s->name, failed, failed_sig);
+        hd_die("the %s worker %d exited with status %d", s->name, failed, failed_code);
+    }
 }
 
 int hash_side(const char *root, const struct hd_list *l, const char *results,

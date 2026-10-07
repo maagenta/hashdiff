@@ -139,6 +139,7 @@ static int parse_jobs(const char *s, int *out)
     return 0;
 }
 
+/* The root "/" is preserved: the n > 1 guard keeps its only slash. */
 static char *strip_trailing_slashes(const char *s)
 {
     char *p = xstrdup(s);
