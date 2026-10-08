@@ -1,6 +1,6 @@
 # hashdiff @VERSION@
 
-<!-- Write the summary of this release here, then publish the draft. -->
+Read the [release notes for this version](@NOTES@).
 
 ## Binaries
 

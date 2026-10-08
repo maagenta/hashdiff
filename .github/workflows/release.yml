@@ -51,9 +51,16 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
+          REPO: ${{ github.server_url }}/${{ github.repository }}
         run: |
           set -eu
-          sed "s/@VERSION@/$VERSION/g" .github/release-notes.md > /tmp/notes.md
+          # RELEASE_NOTES.md as it stood at this tag, never the moving one of the default
+          # branch, and the anchor GitHub gives "## vX.Y": lowercase, no dots.
+          anchor="v$(printf %s "$VERSION" | tr -d .)"
+          sed -e "s/@VERSION@/$VERSION/g" \
+              -e "s/@TAG@/$TAG/g" \
+              -e "s|@NOTES@|$REPO/blob/$TAG/RELEASE_NOTES.md#$anchor|g" \
+              .github/release-notes.md > /tmp/notes.md
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --draft=true --notes-file /tmp/notes.md
           else

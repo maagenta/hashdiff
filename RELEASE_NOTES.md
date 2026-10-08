@@ -1,18 +1,24 @@
 # Release notes
 
-One section per version, newest first. The **Changes** list of a version is the text that
-goes into the `<!-- Write the summary of this release here -->` placeholder of
-`.github/release-notes.md` when the draft release for its tag is reviewed and published, so
-the two never say different things.
+One section per version, newest first. The **Changes** list of a version is what that
+release is: the draft release for its tag links here, to this file as it stood at that tag,
+so there is one text to keep right and not two. A **Changelog** follows it with the commits
+that shipped in that version, oldest first.
+
+The link is built by the release workflow from the tag, which is why the heading of a
+published version is exactly `## vX.Y`: the anchor is derived from the version number, and a
+heading with anything else in it sends the link to the top of the file instead.
 
 Below the versions, **Design notes** keeps the reasoning behind what shipped, and **Backlog**
 what has not been designed yet. For anything implemented, `docs/implementation.md` and the code
 are the truth; the notes are the record of what was decided and why.
 
-## v2.0 (unreleased)
+## v2.0
 
-Until the tag exists, use the v1.0 release:
-<https://github.com/maagenta/hashdiff/releases/tag/v1.0>
+**Closed: nothing more goes into this version.** Everything below is implemented, specified in
+`docs/implementation.md` and green in CI on the nine jobs of the matrix; what is left is the
+tag and the release itself, which the checklist at the end of this section describes. Work
+that comes after this point starts the next version instead.
 
 This version was called 1.1 while it was being written, and the commits up to and including
 "Phase 16: the v1.1 changes list and the version decision" name it that way, as do the phase
@@ -85,16 +91,48 @@ Changed:
 - CI: a `linux-arm64` job (`ubuntu-24.04-arm`, gcc) runs the suite on aarch64. The release
   workflow already built the `linux-arm64` archive; now that target is tested too.
 
+### Changelog
+
+The commits since v1.0, oldest first. Phases 9 to 16 are the ones of section 12 of
+`docs/implementation.md`; the eight before them are this version's preparation, and the two
+after them the gcc build fix and the version decision.
+
+- `b407db8` linux-arm64 added in actions
+- `6ad575d` Explicit "no differences" message; bump version to 1.1
+- `80d7cf4` test_version: expect 1.1
+- `ed5e054` RELEASE_NOTES.md: v1.1 in progress, changes and TODO
+- `cfdb8c3` RELEASE_NOTES.md: coherent v1.1 notes and a reviewed backlog
+- `8947a90` implementation.md: specify the whole backlog
+- `24c8ead` RELEASE_NOTES.md: split the backlog, and a lock for a busy results.hashdiff
+- `064d4dd` implementation.md: section 3.6, one run at a time in one results.hashdiff
+- `6ff7fd2` Phase 9: path cleaning, the singular of the counts and the NOTE
+- `17a683e` Phase 10: one origin against several destinations
+- `01fca33` Phase 11: paths.txt, history.txt, timestamps and format 3
+- `5d76566` Phase 12: the three states of an existing results.hashdiff
+- `94ee04b` Phase 15: one run at a time in one results.hashdiff
+- `99c6722` Phase 14: comparing single files with --file
+- `d324269` Phase 13: --recheck, reading only the paths that differed
+- `abec383` Phase 16: the v1.1 changes list and the version decision
+- `48b287e` Fix the gcc build: no strncpy that may leave recheck_dir unterminated
+- `45cb3d4` The version is 2.0, not 1.1
+
+Phases 13, 14 and 15 landed out of order because none of them depends on the others.
+
 ### Release checklist
 
 1. The version appears in three places and all of them must agree: `HD_VERSION` in
    `src/config.h`, the `--version` line in section 2 of `docs/implementation.md`, and
    `test_version` in `tests/test_cli.py`. The release workflow refuses to publish a tag
    whose name does not match `HD_VERSION`.
-2. Write the Changes list from `git log vPREV..HEAD`: anything that touches the CLI, the
-   output files, the README or the set of tested platforms belongs in it.
-3. Push the tag, let the workflow build the five archives and `SHA256SUMS`, review the
-   draft and publish it with `gh release edit vX.Y --draft=false`.
+2. Write the Changes list and the Changelog from `git log vPREV..HEAD`: anything that touches
+   the CLI, the output files, the README or the set of tested platforms belongs in the Changes
+   list, and every commit belongs in the Changelog.
+3. Push the tag and let the workflow build the five archives and `SHA256SUMS`. It opens the
+   draft with the notes of `.github/release-notes.md`, whose link to this file is already
+   filled in; add to the draft whatever this version needs said on the page itself, such as a
+   break in the on-disk formats and what to do with a run already under way, check that the
+   link lands on this version's section, and publish it with
+   `gh release edit vX.Y --draft=false`.
 
 ## Design notes
 
